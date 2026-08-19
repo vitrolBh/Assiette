@@ -193,8 +193,12 @@ nav.tabs svg { width:22px; height:22px; }
 .toggle input:checked ~ .tr { background:var(--good); }
 .toggle input:checked ~ .th { left:23px; }
 .notice { font-size:13px; color:var(--ink2); background:var(--surface); border:1px dashed var(--axis); border-radius:12px; padding:12px; }
-.toast { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(96px + var(--sab)); background:var(--ink); color:var(--page); padding:10px 18px; border-radius:999px; font-size:14px; z-index:70; opacity:0; transition:opacity .25s; pointer-events:none; max-width:88vw; text-align:center; }
-.toast.show { opacity:1; }
+.toast { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(96px + var(--sab)); background:var(--ink); color:var(--page); padding:10px 12px 10px 18px; border-radius:999px; font-size:14px; z-index:70; opacity:0; transition:opacity .25s; pointer-events:none; max-width:88vw; display:flex; align-items:center; gap:10px; }
+.toast.show { opacity:1; pointer-events:auto; }
+.toast.err { background:var(--critical); }
+.toast .txt { text-align:left; }
+.toast .x { flex:none; width:24px; height:24px; border-radius:50%; display:none; align-items:center; justify-content:center; background:rgba(255,255,255,.2); font-size:14px; line-height:1; }
+.toast.err .x { display:flex; }
 @media (prefers-reduced-motion:reduce) { * { transition:none !important; animation:none !important; } }
 </style>
 </head>
@@ -500,7 +504,7 @@ nav.tabs svg { width:22px; height:22px; }
   <button class="btn" onclick="saveCheckin()">Enregistrer</button>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast"><span class="txt" id="toast-txt"></span><button class="x" onclick="closeToast()" aria-label="Fermer">✕</button></div>
 <div class="tooltip" id="tooltip"></div>
 
 <script>
@@ -528,7 +532,7 @@ function loadDB(){
         profile:{ sexe:"H", age:35, taille:178, poids:78, act:1.375, obj:0 } } },
     meals:[], days:{}, favorites:[] };
 }
-function save(){ try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch(e){ toast("⚠️ Stockage plein — pense à exporter puis purger."); } }
+function save(){ try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch(e){ toast("⚠️ Stockage plein — pense à exporter puis purger.", true); } }
 
 const state = { page:"home", selectedDay: todayStr(), trendPeriod: 30,
   add:{ type:null, date:null, source:null, photo:null, convo:[], result:null, editId:null }, micOn:false };
@@ -543,7 +547,15 @@ function fmtDate(iso){ const d = new Date(iso+"T12:00:00"); return JOURS[d.getDa
 function r0(x){ return Math.round(Number(x)||0); }
 function r1(x){ return Math.round((Number(x)||0)*10)/10; }
 function esc(s){ return String(s??"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-function toast(msg){ const t = $("toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(t._h); t._h = setTimeout(()=>t.classList.remove("show"), 2600); }
+function toast(msg, isError){
+  const t = $("toast");
+  $("toast-txt").textContent = msg;
+  t.classList.toggle("err", !!isError);
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(()=>t.classList.remove("show"), isError ? 30000 : 2600);
+}
+function closeToast(){ const t = $("toast"); clearTimeout(t._h); t.classList.remove("show"); }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function cssv(name){ return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
@@ -837,7 +849,7 @@ function toggleMic(){
     $("ai-desc-input").value = base + txt;
   };
   rec.onend = ()=>{ state.micOn = false; $("mic-btn").textContent = "🎙️ Dicter"; };
-  rec.onerror = ()=>{ stopMic(); toast("Micro indisponible — utilise la dictée du clavier."); };
+  rec.onerror = ()=>{ stopMic(); toast("Micro indisponible — utilise la dictée du clavier.", true); };
   rec.start(); state.micOn = true; $("mic-btn").textContent = "⏹ Stop";
 }
 function stopMic(){ if (rec){ try{ rec.stop(); }catch(e){} rec = null; } state.micOn = false; const b=$("mic-btn"); if(b) b.textContent = "🎙️ Dicter"; }
@@ -1241,26 +1253,26 @@ async function handleWithingsCallback(){
   const expected = localStorage.getItem("assiette_withings_state");
   history.replaceState({}, "", location.pathname);
   localStorage.removeItem("assiette_withings_state");
-  if (!st || st !== expected){ toast("Connexion Withings annulée (état invalide)"); return true; }
+  if (!st || st !== expected){ toast("Connexion Withings annulée (état invalide)", true); return true; }
   try {
     await withingsTokenExchange(code);
     toast("Withings connecté ✓");
     await syncWithings(true);
-  } catch(e){ toast("Connexion Withings échouée : "+(e.message||e)); }
+  } catch(e){ toast("Connexion Withings échouée : "+(e.message||e), true); }
   if (state.page==="settings") renderSettings();
   return true;
 }
 async function syncWithings(manual){
   const w = db.settings.withings; if (!w) return;
   const ok = await withingsEnsureToken();
-  if (!ok){ disconnectWithings(); if (manual) toast("Connexion Withings expirée — reconnecte-toi."); return; }
+  if (!ok){ disconnectWithings(); if (manual) toast("Connexion Withings expirée — reconnecte-toi.", true); return; }
   try {
     const r = await fetch(WITHINGS.worker+"/measure", { method:"POST", headers:{"content-type":"application/json"},
       body: JSON.stringify({ access_token: w.access, since: w.lastSync||0 }) });
     const data = await r.json();
     if (data.status === 401){
       const ok2 = await withingsRefreshToken();
-      if (!ok2){ disconnectWithings(); if (manual) toast("Connexion Withings expirée — reconnecte-toi."); return; }
+      if (!ok2){ disconnectWithings(); if (manual) toast("Connexion Withings expirée — reconnecte-toi.", true); return; }
       return syncWithings(manual);
     }
     if (data.status !== 0) throw new Error("Erreur Withings ("+data.status+")");
@@ -1281,7 +1293,7 @@ async function syncWithings(manual){
     if (manual) toast(count ? count+" pesée(s) importée(s) ✓" : "Aucune nouvelle pesée");
     refresh();
     if (state.page==="settings") renderSettings();
-  } catch(e){ if (manual) toast("Sync Withings échouée : "+(e.message||e)); }
+  } catch(e){ if (manual) toast("Sync Withings échouée : "+(e.message||e), true); }
 }
 function renderWithingsRow(){
   const w = db.settings.withings, el = $("withings-row");
@@ -1343,7 +1355,7 @@ async function testAI(){
   try {
     await callClaude([{role:"user", content:"Réponds uniquement : {\"plat\":\"test\",\"ingredients\":[],\"total\":{\"kcal\":0,\"prot_g\":0,\"gluc_g\":0,\"lip_g\":0},\"confiance\":1,\"questions\":[]}"}]);
     toast("✓ Connexion à Claude OK !");
-  } catch(e){ toast("✗ "+ (e.message||"échec")); }
+  } catch(e){ toast("✗ "+ (e.message||"échec"), true); }
 }
 
 /* ================= Export / import ================= */
@@ -1365,7 +1377,7 @@ $("json-file").addEventListener("change", e=>{
       const j = JSON.parse(rd.result);
       if (!j.meals || !j.settings) throw 0;
       db = j; db.favorites = db.favorites || []; save(); toast("Données restaurées ✓"); showPage("home");
-    } catch { toast("Fichier invalide"); }
+    } catch { toast("Fichier invalide", true); }
   };
   rd.readAsText(f);
 });
