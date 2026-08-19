@@ -20,15 +20,22 @@ https://vitrolbh.github.io/Assiette/
 ```js
 {
   settings: { apiKey, model, goals: { mode: "manual"|"profile"|"default",
-              manual:{kcal,prot,gluc,lip}, profile:{sexe,age,taille,poids,act,obj} } },
+              manual:{kcal,prot,gluc,lip}, profile:{sexe,age,taille,poids,act,obj} },
+              withings: null | {access,refresh,expiresAt,userid,lastSync} },
   meals: [ { id, date:"YYYY-MM-DD", time:"HH:MM", type, source, name,
              kcal, prot, gluc, lip, ingredients[], thumb } ],
-  days:  { "YYYY-MM-DD": { poids, pas, kcalOut, exercice } }
+  days:  { "YYYY-MM-DD": { poids, poidsSrc:"manuel"|"withings", pas, kcalOut, exercice } },
+  favorites: [ { id, name, kcal, prot, gluc, lip, ingredients[], thumb } ]
 }
 ```
 
-- Les données ne quittent JAMAIS l'appareil (sauf appels à l'API Anthropic).
-- Ne jamais logger ni exposer `settings.apiKey`. Ne rien envoyer vers d'autres serveurs.
+- Les données ne quittent JAMAIS l'appareil, sauf : appels à l'API Anthropic (analyse
+  repas) et échange de tokens OAuth avec le Worker Cloudflare `assiette-withings`
+  (voir `WITHINGS.md`) — le Worker ne stocke rien, les tokens restent en localStorage.
+- Ne jamais logger ni exposer `settings.apiKey` ni les tokens Withings. Ne rien envoyer
+  vers d'autres serveurs.
+- `days[d].poidsSrc` distingue une pesée saisie à la main ("manuel", prioritaire, jamais
+  écrasée par une sync) d'une pesée importée automatiquement ("withings").
 - Si le schéma évolue : écrire une migration depuis `assiette_v1` (ne pas perdre les données).
 
 ## API Claude (analyse des repas)
@@ -58,7 +65,8 @@ https://vitrolbh.github.io/Assiette/
 
 ## Roadmap (idées validées avec Ben)
 
-- Phase 2 : sync Withings automatique (nécessite un petit relais serveur — l'API
-  Withings n'accepte pas les appels CORS directs depuis le navigateur).
+- ✅ Repas favoris (réajout en 1 tap depuis la feuille d'ajout).
+- ✅ Sync Withings automatique du poids (OAuth + relais Cloudflare Worker —
+  voir `WITHINGS.md` pour l'architecture complète).
 - Import export Apple Santé / Strava pour pas et calories dépensées.
-- Rappels, favoris/repas récurrents, scan code-barres (OpenFoodFacts) : à discuter.
+- Rappels, scan code-barres (OpenFoodFacts) : à discuter.

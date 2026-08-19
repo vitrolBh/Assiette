@@ -363,10 +363,7 @@ nav.tabs svg { width:22px; height:22px; }
       <button class="btn ghost" onclick="document.getElementById('csv-file').click()">Importer</button>
       <input type="file" id="csv-file" accept=".csv,text/csv" hidden>
     </div>
-    <div class="setrow">
-      <div><div style="font-weight:600">Withings — sync auto</div><div class="tiny">Bientôt : synchronisation automatique de la balance</div></div>
-      <span class="tiny">Phase 2</span>
-    </div>
+    <div class="setrow" id="withings-row"></div>
   </div>
 
   <div class="card">
@@ -499,7 +496,7 @@ nav.tabs svg { width:22px; height:22px; }
       <label class="toggle" style="margin-top:8px"><input type="checkbox" id="ci-exo"><span class="tr"></span><span class="th"></span></label>
     </div>
   </div>
-  <div class="tiny" style="margin-bottom:10px">Poids : synchronisable plus tard via Withings. Pas &amp; kcal : visibles dans l’app Santé de l’iPhone.</div>
+  <div class="tiny" style="margin-bottom:10px">Poids : synchronisable auto via Withings (Réglages → Sources de données). Pas &amp; kcal : visibles dans l’app Santé de l’iPhone.</div>
   <button class="btn" onclick="saveCheckin()">Enregistrer</button>
 </div>
 
@@ -513,12 +510,20 @@ const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
 let db = loadDB();
 db.favorites = db.favorites || [];
+db.settings.withings = db.settings.withings || null;
+
+const WITHINGS = {
+  clientId: "72446188fa3e2c381f62f6c2e617b09e71cbee19dc2fd0722e39d6e4810a8587",
+  worker: "https://assiette-withings.benvitrolvautier.workers.dev",
+  redirect: "https://vitrolbh.github.io/Assiette/",
+  scope: "user.metrics",
+};
 function loadDB(){
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (raw) return JSON.parse(raw);
   } catch(e) { console.warn("localStorage indisponible", e); }
-  return { settings:{ apiKey:"", model:"claude-sonnet-4-5",
+  return { settings:{ apiKey:"", model:"claude-sonnet-4-5", withings:null,
       goals:{ mode:"default", manual:{...DEFAULTS},
         profile:{ sexe:"H", age:35, taille:178, poids:78, act:1.375, obj:0 } } },
     meals:[], days:{}, favorites:[] };
@@ -697,8 +702,11 @@ function fillCheckin(){
 }
 function saveCheckin(){
   const d = state.checkinDay || todayStr();
-  db.days[d] = { ...dayInfo(d),
-    poids: parseFloat($("ci-poids").value)||null,
+  const prev = dayInfo(d);
+  const poids = parseFloat($("ci-poids").value)||null;
+  db.days[d] = { ...prev,
+    poids,
+    poidsSrc: poids==null ? prev.poidsSrc : (poids===prev.poids ? prev.poidsSrc : "manuel"),
     pas: parseInt($("ci-pas").value)||null,
     kcalOut: parseInt($("ci-kcalout").value)||null,
     exercice: $("ci-exo").checked };
@@ -1183,6 +1191,112 @@ function drawSteps(el, days){
     ${chartFrame(0,yMax,v=>r0(v).toLocaleString("fr-FR"))}${bars}${xLabels(pts)}</svg>`;
   attachTips(el);
 }
+/* ================= Withings ================= */
+function connectWithings(){
+  const rnd = uid()+uid();
+  localStorage.setItem("assiette_withings_state", rnd);
+  const params = new URLSearchParams({ response_type:"code", client_id:WITHINGS.clientId,
+    scope:WITHINGS.scope, redirect_uri:WITHINGS.redirect, state:rnd });
+  location.href = "https://account.withings.com/oauth2_user/authorize2?"+params.toString();
+}
+function disconnectWithings(){
+  db.settings.withings = null;
+  save(); toast("Withings déconnecté");
+  if (state.page==="settings") renderSettings();
+}
+async function withingsTokenExchange(code){
+  const r = await fetch(WITHINGS.worker+"/token", { method:"POST", headers:{"content-type":"application/json"},
+    body: JSON.stringify({ code, redirect_uri: WITHINGS.redirect }) });
+  const data = await r.json();
+  if (data.status !== 0) throw new Error("Erreur Withings ("+data.status+")");
+  const b = data.body;
+  db.settings.withings = { access:b.access_token, refresh:b.refresh_token,
+    expiresAt: Date.now()+b.expires_in*1000, userid:b.userid, lastSync:0 };
+  save();
+}
+async function withingsRefreshToken(){
+  const w = db.settings.withings; if (!w) return false;
+  const r = await fetch(WITHINGS.worker+"/refresh", { method:"POST", headers:{"content-type":"application/json"},
+    body: JSON.stringify({ refresh_token: w.refresh }) });
+  const data = await r.json().catch(()=>({status:-1}));
+  if (data.status !== 0) return false;
+  const b = data.body;
+  w.access = b.access_token; w.refresh = b.refresh_token; w.expiresAt = Date.now()+b.expires_in*1000;
+  save();
+  return true;
+}
+async function withingsEnsureToken(){
+  const w = db.settings.withings; if (!w) return false;
+  if (Date.now() > w.expiresAt-60000){
+    const ok = await withingsRefreshToken();
+    if (!ok) return false;
+  }
+  return true;
+}
+async function handleWithingsCallback(){
+  const url = new URL(location.href);
+  const code = url.searchParams.get("code");
+  if (!code) return false;
+  const st = url.searchParams.get("state");
+  const expected = localStorage.getItem("assiette_withings_state");
+  history.replaceState({}, "", location.pathname);
+  localStorage.removeItem("assiette_withings_state");
+  if (!st || st !== expected){ toast("Connexion Withings annulée (état invalide)"); return true; }
+  try {
+    await withingsTokenExchange(code);
+    toast("Withings connecté ✓");
+    await syncWithings(true);
+  } catch(e){ toast("Connexion Withings échouée : "+(e.message||e)); }
+  if (state.page==="settings") renderSettings();
+  return true;
+}
+async function syncWithings(manual){
+  const w = db.settings.withings; if (!w) return;
+  const ok = await withingsEnsureToken();
+  if (!ok){ disconnectWithings(); if (manual) toast("Connexion Withings expirée — reconnecte-toi."); return; }
+  try {
+    const r = await fetch(WITHINGS.worker+"/measure", { method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ access_token: w.access, since: w.lastSync||0 }) });
+    const data = await r.json();
+    if (data.status === 401){
+      const ok2 = await withingsRefreshToken();
+      if (!ok2){ disconnectWithings(); if (manual) toast("Connexion Withings expirée — reconnecte-toi."); return; }
+      return syncWithings(manual);
+    }
+    if (data.status !== 0) throw new Error("Erreur Withings ("+data.status+")");
+    const groups = (data.body && data.body.measuregrps) || [];
+    let count = 0;
+    groups.forEach(g=>{
+      const m = (g.measures||[]).find(x=>x.type===1);
+      if (!m) return;
+      const kg = r1(m.value * Math.pow(10, m.unit));
+      const iso = todayStr(g.date*1000);
+      const prev = dayInfo(iso);
+      if (prev.poidsSrc === "manuel") return;
+      db.days[iso] = { ...prev, poids:kg, poidsSrc:"withings" };
+      count++;
+    });
+    w.lastSync = Math.floor(Date.now()/1000);
+    save();
+    if (manual) toast(count ? count+" pesée(s) importée(s) ✓" : "Aucune nouvelle pesée");
+    refresh();
+    if (state.page==="settings") renderSettings();
+  } catch(e){ if (manual) toast("Sync Withings échouée : "+(e.message||e)); }
+}
+function renderWithingsRow(){
+  const w = db.settings.withings, el = $("withings-row");
+  if (!w){
+    el.innerHTML = `<div><div style="font-weight:600">Withings — sync auto</div><div class="tiny">Connecte ta balance pour importer ton poids automatiquement</div></div>
+      <button class="btn ghost" onclick="connectWithings()">Connecter Withings</button>`;
+    return;
+  }
+  const last = w.lastSync ? "Dernière sync : "+new Date(w.lastSync*1000).toLocaleString("fr-FR") : "Pas encore synchronisé";
+  el.innerHTML = `<div><div style="font-weight:600">Withings — <span style="color:var(--goodtext)">connecté ✓</span></div><div class="tiny">${last}</div></div>
+    <div class="row" style="gap:8px">
+      <button class="btn ghost" onclick="syncWithings(true)">Synchroniser</button>
+      <button class="btn ghost" style="color:var(--critical)" onclick="disconnectWithings()">Déconnecter</button>
+    </div>`;
+}
 /* ================= Réglages ================= */
 function renderSettings(){
   const g = db.settings.goals;
@@ -1197,6 +1311,7 @@ function renderSettings(){
   $("s-apikey").value = db.settings.apiKey||"";
   $("s-model").value = db.settings.model||"claude-sonnet-4-5";
   updateGoalPreview();
+  renderWithingsRow();
 }
 document.querySelectorAll("#goal-mode-chips .chip").forEach(c=>{
   c.addEventListener("click", ()=>{ db.settings.goals.mode = c.dataset.mode; renderSettings(); });
@@ -1283,6 +1398,10 @@ window.addEventListener("keydown", e=>{ if (e.key==="Escape") closeSheets(); });
 renderHome();
 if ("serviceWorker" in navigator && location.protocol === "https:")
   navigator.serviceWorker.register("sw.js").catch(()=>{});
+(async ()=>{
+  const handled = await handleWithingsCallback();
+  if (!handled && db.settings.withings) await syncWithings(false);
+})();
 </script>
 </body>
 </html>
