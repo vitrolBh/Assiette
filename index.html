@@ -416,6 +416,10 @@ nav.tabs svg { width:22px; height:22px; }
       <button class="chip" data-t="collation">Collation</button>
     </div>
   </div>
+  <div id="add-fav-section" style="display:none;margin-bottom:14px">
+    <label style="display:block;font-size:13px;font-weight:600;color:var(--ink2);margin-bottom:5px">★ Favoris — 1 tap pour réajouter</label>
+    <div class="chips" id="add-fav-list"></div>
+  </div>
   <div class="srcs">
     <button class="src" onclick="startPhoto()"><div class="e">📷</div><div class="t">Photo</div><div class="s">Analyse IA</div></button>
     <button class="src" onclick="startVoice()"><div class="e">🎙️</div><div class="t">Décrire</div><div class="s">Dictée / texte</div></button>
@@ -458,13 +462,17 @@ nav.tabs svg { width:22px; height:22px; }
     <div id="ai-questions"></div>
     <button class="btn" onclick="acceptAI()">✓ Ajouter ce repas</button>
     <button class="btn sec" style="margin-top:8px" onclick="editAIresult()">Ajuster manuellement</button>
+    <button class="btn ghost" style="margin-top:4px" onclick="favoriteFromAI()">☆ Enregistrer en favori</button>
   </div>
 </div>
 
 <!-- ============ SHEET : SAISIE MANUELLE / ÉDITION ============ -->
 <div class="sheet" id="sheet-manual" role="dialog" aria-label="Saisie manuelle">
   <div class="grab"></div>
-  <h2 id="manual-title">Saisie manuelle</h2>
+  <div class="row spread">
+    <h2 id="manual-title">Saisie manuelle</h2>
+    <button class="btn ghost" style="width:auto" onclick="favoriteFromManual()">☆ Favori</button>
+  </div>
   <div class="field"><label>Nom du repas</label><input id="m-name" placeholder="Ex : Poulet riz brocolis"></div>
   <div class="grid4">
     <div class="field"><label>kcal</label><input type="number" id="m-kcal" inputmode="numeric"></div>
@@ -504,6 +512,7 @@ nav.tabs svg { width:22px; height:22px; }
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
 let db = loadDB();
+db.favorites = db.favorites || [];
 function loadDB(){
   try {
     const raw = localStorage.getItem(LS_KEY);
@@ -512,7 +521,7 @@ function loadDB(){
   return { settings:{ apiKey:"", model:"claude-sonnet-4-5",
       goals:{ mode:"default", manual:{...DEFAULTS},
         profile:{ sexe:"H", age:35, taille:178, poids:78, act:1.375, obj:0 } } },
-    meals:[], days:{} };
+    meals:[], days:{}, favorites:[] };
 }
 function save(){ try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch(e){ toast("⚠️ Stockage plein — pense à exporter puis purger."); } }
 
@@ -707,7 +716,51 @@ function guessType(){
 function openAddMeal(date){
   state.add = { type:guessType(), date: date||todayStr(), source:null, photo:null, convo:[], result:null, editId:null };
   document.querySelectorAll("#add-type-chips .chip").forEach(c=>c.classList.toggle("on", c.dataset.t===state.add.type));
+  renderAddFavorites();
   openSheet("sheet-add");
+}
+/* ---------- Favoris ---------- */
+function renderAddFavorites(){
+  const sec = $("add-fav-section");
+  if (!db.favorites.length){ sec.style.display = "none"; return; }
+  sec.style.display = "block";
+  $("add-fav-list").innerHTML = db.favorites.map(f=>`
+    <button class="chip" onclick="addMealFromFavorite('${f.id}')">
+      <span>${esc(f.name)} · <span class="num">${r0(f.kcal)}</span> kcal</span>
+      <span onclick="event.stopPropagation();removeFavorite('${f.id}')" style="margin-left:6px;color:var(--muted)" aria-label="Retirer des favoris">✕</span>
+    </button>`).join("");
+}
+function addMealFromFavorite(id){
+  const f = db.favorites.find(x=>x.id===id); if (!f) return;
+  db.meals.push({ id:uid(), date: state.add.date||todayStr(), time: new Date().toTimeString().slice(0,5),
+    type: state.add.type||guessType(), source:"favori",
+    name: f.name, kcal: f.kcal, prot: f.prot, gluc: f.gluc, lip: f.lip,
+    ingredients: f.ingredients||[], thumb: f.thumb||null });
+  save(); closeSheets(); toast("Repas ajouté depuis les favoris ✓"); refresh();
+}
+function removeFavorite(id){
+  db.favorites = db.favorites.filter(x=>x.id!==id);
+  save(); renderAddFavorites(); toast("Favori supprimé");
+}
+function addFavorite(name, kcal, prot, gluc, lip, ingredients, thumb){
+  name = (name||"").trim() || "Repas";
+  const existing = db.favorites.find(f=>f.name.toLowerCase()===name.toLowerCase());
+  const data = { name, kcal:r0(kcal), prot:r1(prot), gluc:r1(gluc), lip:r1(lip), ingredients:ingredients||[], thumb:thumb||null };
+  if (existing) Object.assign(existing, data);
+  else db.favorites.push({ id:uid(), ...data });
+  save(); toast(existing ? "Favori mis à jour ✓" : "Ajouté aux favoris ★");
+}
+function favoriteFromManual(){
+  const name = $("m-name").value.trim();
+  if (!name) return toast("Donne un nom au repas d’abord");
+  const prot = parseFloat($("m-prot").value)||0, gluc = parseFloat($("m-gluc").value)||0, lip = parseFloat($("m-lip").value)||0;
+  let kcal = parseFloat($("m-kcal").value);
+  if (!kcal && kcal!==0) kcal = prot*4 + gluc*4 + lip*9;
+  addFavorite(name, kcal, prot, gluc, lip, [], null);
+}
+function favoriteFromAI(){
+  const r = state.add.result; if (!r) return;
+  addFavorite(r.plat, r.total.kcal, r.total.prot_g, r.total.gluc_g, r.total.lip_g, r.ingredients, state.add.thumb);
 }
 document.querySelectorAll("#add-type-chips .chip").forEach(c=>{
   c.addEventListener("click", ()=>{
@@ -1196,7 +1249,7 @@ $("json-file").addEventListener("change", e=>{
     try {
       const j = JSON.parse(rd.result);
       if (!j.meals || !j.settings) throw 0;
-      db = j; save(); toast("Données restaurées ✓"); showPage("home");
+      db = j; db.favorites = db.favorites || []; save(); toast("Données restaurées ✓"); showPage("home");
     } catch { toast("Fichier invalide"); }
   };
   rd.readAsText(f);
