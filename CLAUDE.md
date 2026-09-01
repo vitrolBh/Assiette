@@ -10,8 +10,9 @@ https://vitrolbh.github.io/Assiette/
   Tendances, Réglages) → sheets (ajout repas, analyse IA, manuel, check-in) → JS
   (état/stockage → objectifs → navigation → rendus → ajout repas → API Claude →
   tendances/graphes SVG → réglages → import/export → init).
-- **`sw.js`** — service worker (cache offline). ⚠️ **À chaque modification de
-  l'app, incrémenter la constante `CACHE`** (`assiette-v1` → `assiette-v2`, …)
+- **`sw.js`** — service worker (cache offline). ⚠️ **À chaque livraison,
+  incrémenter `APP_VERSION` (dans `index.html`) et la constante `CACHE`
+  (dans `sw.js`) en même temps** (`assiette-v1` → `assiette-v2`, …) —
   sinon les utilisateurs gardent l'ancienne version.
 - `manifest.webmanifest`, `icon-192.png`, `icon-512.png`, `apple-touch-icon.png` — PWA.
 

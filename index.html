@@ -199,6 +199,10 @@ nav.tabs svg { width:22px; height:22px; }
 .toast .txt { text-align:left; }
 .toast .x { flex:none; width:24px; height:24px; border-radius:50%; display:none; align-items:center; justify-content:center; background:rgba(255,255,255,.2); font-size:14px; line-height:1; }
 .toast.err .x { display:flex; }
+.update-banner { position:fixed; left:0; right:0; bottom:calc(72px + var(--sab)); background:var(--surface); border-top:1px solid var(--ring); padding:10px 16px; z-index:65; display:none; align-items:center; justify-content:space-between; gap:12px; font-size:14px; }
+.update-banner.show { display:flex; }
+.update-banner .btn-update { color:var(--accent); font-weight:600; padding:4px 8px; }
+.update-banner .x { flex:none; width:24px; height:24px; border-radius:50%; display:flex; align-items:center; justify-content:center; background:var(--ring); font-size:14px; }
 @media (prefers-reduced-motion:reduce) { * { transition:none !important; animation:none !important; } }
 </style>
 </head>
@@ -372,6 +376,17 @@ nav.tabs svg { width:22px; height:22px; }
   </div>
 
   <div class="card">
+    <h2>Application</h2>
+    <div class="setrow">
+      <div><div style="font-weight:600">Version installée</div><div class="tiny" id="app-version"></div></div>
+    </div>
+    <div class="setrow">
+      <div></div>
+      <button class="btn ghost" onclick="checkUpdate()">Rechercher une mise à jour</button>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Sauvegarde</h2>
     <div class="setrow">
       <div><div style="font-weight:600">Exporter mes données</div><div class="tiny">Fichier JSON complet (repas, poids, réglages)</div></div>
@@ -387,7 +402,7 @@ nav.tabs svg { width:22px; height:22px; }
       <button class="btn ghost" style="color:var(--critical)" onclick="wipeData()">Effacer</button>
     </div>
   </div>
-  <div class="tiny" style="text-align:center;padding:8px">Assiette v1 — vos données restent sur votre appareil.</div>
+  <div class="tiny" style="text-align:center;padding:8px">Assiette <span id="footer-version"></span> — vos données restent sur votre appareil.</div>
 </main>
 
 <!-- ============ TAB BAR ============ -->
@@ -507,9 +522,16 @@ nav.tabs svg { width:22px; height:22px; }
 
 <div class="toast" id="toast"><span class="txt" id="toast-txt"></span><button class="x" onclick="closeToast()" aria-label="Fermer">✕</button></div>
 <div class="tooltip" id="tooltip"></div>
+<div class="update-banner" id="update-banner">
+  <span>Nouvelle version disponible</span>
+  <button class="btn-update" onclick="applyUpdate()">Actualiser</button>
+  <button class="x" onclick="hideUpdateBanner()" aria-label="Fermer">✕</button>
+</div>
 
 <script>
 "use strict";
+/* ================= Application ================= */
+const APP_VERSION = "1.5.1";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -1450,6 +1472,8 @@ function renderSettings(){
   $("p-poids").value = p.poids; $("p-act").value = String(p.act); $("p-obj").value = String(p.obj);
   $("s-apikey").value = db.settings.apiKey||"";
   $("s-model").value = db.settings.model||"claude-sonnet-4-5";
+  $("app-version").textContent = "v"+APP_VERSION;
+  $("footer-version").textContent = "v"+APP_VERSION;
   updateGoalPreview();
   renderWithingsRow();
   renderStravaRow();
@@ -1534,11 +1558,48 @@ function wipeData(){
   localStorage.removeItem(LS_KEY); db = loadDB(); showPage("home"); toast("Données effacées");
 }
 
+/* ================= Mises à jour ================= */
+function showUpdateBanner(){
+  $("update-banner").classList.add("show");
+}
+function hideUpdateBanner(){
+  $("update-banner").classList.remove("show");
+}
+async function checkUpdate(){
+  const reg = window.__swReg || await navigator.serviceWorker.getRegistration();
+  if (!reg) return toast("Mises à jour indisponibles ici");
+  toast("Vérification…");
+  await reg.update();
+  if (reg.waiting) showUpdateBanner();
+  else toast("Tu es à jour (v"+APP_VERSION+")");
+}
+function applyUpdate(){
+  window.__swReg.waiting.postMessage("SKIP_WAITING");
+  hideUpdateBanner();
+}
+
 /* ================= Init ================= */
 window.addEventListener("keydown", e=>{ if (e.key==="Escape") closeSheets(); });
 renderHome();
-if ("serviceWorker" in navigator && location.protocol === "https:")
-  navigator.serviceWorker.register("sw.js").catch(()=>{});
+if ("serviceWorker" in navigator && location.protocol === "https:"){
+  navigator.serviceWorker.register("sw.js").then(reg => {
+    window.__swReg = reg;
+    if (reg.waiting && navigator.serviceWorker.controller) showUpdateBanner();
+    reg.addEventListener("updatefound", () => {
+      const nw = reg.installing;
+      if (!nw) return;
+      nw.addEventListener("statechange", () => {
+        if (nw.state === "installed" && navigator.serviceWorker.controller) showUpdateBanner();
+      });
+    });
+  }).catch(()=>{});
+  let reloading = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (reloading) return;
+    reloading = true;
+    location.reload();
+  });
+}
 (async ()=>{
   const handled = await handleOAuthCallback();
   if (!handled && db.settings.withings) await syncWithings(false);
