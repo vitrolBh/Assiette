@@ -540,6 +540,17 @@ nav.tabs svg { width:22px; height:22px; }
   <button class="btn" onclick="saveCheckin()">Enregistrer</button>
 </div>
 
+<!-- ============ SHEET : RPE ============ -->
+<div class="sheet" id="sheet-rpe" role="dialog" aria-label="Saisie RPE">
+  <div class="grab"></div>
+  <h2>RPE — <span id="rpe-selector-name"></span></h2>
+  <div style="font-size:13px;color:var(--ink2);margin-bottom:12px">
+    <span id="rpe-selector-date"></span> — Évalue ta perception de l'effort (1–10)
+  </div>
+  <div class="chips" id="rpe-selector-values"></div>
+  <input type="hidden" id="rpe-selector-id">
+</div>
+
 <div class="toast" id="toast"><span class="txt" id="toast-txt"></span><button class="x" onclick="closeToast()" aria-label="Fermer">✕</button></div>
 <div class="tooltip" id="tooltip"></div>
 <div class="update-banner" id="update-banner">
@@ -551,7 +562,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.6.0";
+const APP_VERSION = "1.6.1";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -775,6 +786,36 @@ function formatChange(current, previous){
   const sign = pct>=0 ? "+" : "";
   return sign+pct+"%";
 }
+function getComparableWorkouts(w, days){
+  const cutoff = new Date(w.date);
+  cutoff.setDate(cutoff.getDate() - days);
+  const cutoffStr = todayStr(cutoff);
+  return Object.values(db.workouts).filter(x=>
+    x.date >= cutoffStr && x.date !== w.date && x.rpe !== null && x.relative_effort !== null &&
+    x.type === w.type && Math.abs(x.duree_min - w.duree_min) <= 30
+  );
+}
+function percentile(arr, val){
+  if (arr.length === 0) return 50;
+  const sorted = [...arr].sort((a,b)=>a-b);
+  const idx = sorted.filter(x=>x<=val).length;
+  return Math.round((idx / arr.length) * 100);
+}
+function getRPEMessage(w){
+  if (!w.relative_effort) return "";
+  const comparables = getComparableWorkouts(w, 90);
+  if (comparables.length < 8) return "pas encore assez d'historique pour comparer";
+  const rpe = w.rpe || w.perceived_exertion || 0;
+  if (!rpe) return "";
+  const rpeVals = comparables.map(x=>x.rpe||x.perceived_exertion).filter(x=>x);
+  const reVals = comparables.map(x=>x.relative_effort).filter(x=>x);
+  const z_rpe = percentile(rpeVals, rpe);
+  const z_re = percentile(reVals, w.relative_effort);
+  const ecart = z_rpe - z_re;
+  if (ecart > 25) return "Tu l'as vécue plus dure que ce que dit ton cardio. Fatigue, sommeil, chaleur ou nutrition peuvent expliquer l'écart.";
+  if (ecart < -25) return "Séance plus exigeante physiologiquement que ressentie — attention à ne pas sous-estimer la récupération.";
+  return "Ressenti cohérent avec l'effort mesuré.";
+}
 function renderTraining(){
   const this_week = weekStats(0);
   const last_week = weekStats(1);
@@ -800,20 +841,54 @@ function renderTraining(){
       <div class="tiny">${formatChange(this_week.charge, last_week.charge)}</div>
     </div>`;
   const recent = Object.values(db.workouts).sort((a,b)=>(b.date+b.debut).localeCompare(a.date+a.debut)).slice(0,20);
-  $("training-workouts").innerHTML = recent.map(w=>`
-    <div style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--grid);align-items:center">
+  $("training-workouts").innerHTML = recent.map(w=>{
+    const rpe = w.rpe || w.perceived_exertion;
+    const msg = getRPEMessage(w);
+    return `
+    <div style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--grid)">
       <div style="flex:1;min-width:0">
-        <div style="font-weight:600;font-size:14px;margin-bottom:2px">${w.nom}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
+          <div style="font-weight:600;font-size:14px;flex:1">${w.nom}</div>
+          ${!rpe?`<button class="btn ghost" style="width:auto;font-size:12px;padding:2px 6px;color:var(--muted)" onclick="openRPESelector('${w.date}',${w.id})">RPE ?</button>`:""}
+        </div>
         <div style="font-size:13px;color:var(--ink2);margin-bottom:4px">${fmtDate(w.date)} ${w.debut}</div>
-        <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted)">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:6px">
           <span>${w.duree_min} min</span>
           ${w.denivele_m?`<span>${w.denivele_m} m</span>`:""}
           ${w.kcal?`<span>${r0(w.kcal)} kcal</span>`:""}
           ${w.fc_moy?`<span>FC ${r0(w.fc_moy)} bpm</span>`:""}
           ${w.relative_effort?`<span>RE ${r0(w.relative_effort)}</span>`:""}
+          ${rpe?`<span style="color:var(--accent)">RPE ${rpe}</span>`:""}
         </div>
+        ${msg?`<div style="font-size:12px;color:var(--ink2);font-style:italic">${msg}</div>`:""}
       </div>
-    </div>`).join("");
+    </div>`;
+  }).join("");
+}
+function openRPESelector(date, id){
+  const w = db.workouts[String(id)];
+  if (!w) return;
+  const labels = ["","très facile","facile","","modéré","","dur","","très dur","","maximal"];
+  $("rpe-selector-id").value = String(id);
+  $("rpe-selector-date").textContent = fmtDate(date);
+  $("rpe-selector-name").textContent = w.nom;
+  $("rpe-selector-values").innerHTML = Array.from({length:10},(_, i)=>{
+    const val = i+1;
+    const lbl = labels[val] || "";
+    return `<button class="chip" data-rpe="${val}" onclick="selectRPE(${val})" style="flex:1;padding:8px 4px;border:1px solid var(--grid);border-radius:8px;background:var(--surface);cursor:pointer;transition:all .2s">${val}${lbl?'<br><span style="font-size:11px;color:var(--muted)">'+lbl+'</span>':""}</button>`;
+  }).join("");
+  openSheet("sheet-rpe");
+}
+function selectRPE(val){
+  const id = $("rpe-selector-id").value;
+  const w = db.workouts[id];
+  if (!w) return;
+  w.rpe = val;
+  w.rpeSrc = "app";
+  save();
+  closeSheets();
+  toast("RPE "+val+" enregistré ✓");
+  if (state.page==="training") renderTraining();
 }
 
 /* ================= Sheets ================= */
