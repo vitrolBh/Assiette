@@ -368,6 +368,7 @@ nav.tabs svg { width:22px; height:22px; }
       <input type="file" id="csv-file" accept=".csv,text/csv" hidden>
     </div>
     <div class="setrow" id="withings-row"></div>
+    <div class="setrow" id="strava-row"></div>
   </div>
 
   <div class="card">
@@ -515,6 +516,8 @@ const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
 let db = loadDB();
 db.favorites = db.favorites || [];
 db.settings.withings = db.settings.withings || null;
+db.settings.strava = db.settings.strava || null;
+db.workouts = db.workouts || {};
 
 const WITHINGS = {
   clientId: "72446188fa3e2c381f62f6c2e617b09e71cbee19dc2fd0722e39d6e4810a8587",
@@ -522,15 +525,21 @@ const WITHINGS = {
   redirect: "https://vitrolbh.github.io/Assiette/",
   scope: "user.metrics",
 };
+const STRAVA = {
+  clientId: "XXXXX",
+  worker: "https://assiette-withings.benvitrolvautier.workers.dev",
+  redirect: "https://vitrolbh.github.io/Assiette/",
+  scope: "activity:read_all",
+};
 function loadDB(){
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (raw) return JSON.parse(raw);
   } catch(e) { console.warn("localStorage indisponible", e); }
-  return { settings:{ apiKey:"", model:"claude-sonnet-4-5", withings:null,
+  return { settings:{ apiKey:"", model:"claude-sonnet-4-5", withings:null, strava:null,
       goals:{ mode:"default", manual:{...DEFAULTS},
         profile:{ sexe:"H", age:35, taille:178, poids:78, act:1.375, obj:0 } } },
-    meals:[], days:{}, favorites:[] };
+    meals:[], days:{}, favorites:[], workouts:{} };
 }
 function save(){ try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch(e){ toast("⚠️ Stockage plein — pense à exporter puis purger.", true); } }
 
@@ -1205,7 +1214,7 @@ function drawSteps(el, days){
 }
 /* ================= Withings ================= */
 function connectWithings(){
-  const rnd = uid()+uid();
+  const rnd = "withings_"+uid()+uid();
   localStorage.setItem("assiette_withings_state", rnd);
   const params = new URLSearchParams({ response_type:"code", client_id:WITHINGS.clientId,
     scope:WITHINGS.scope, redirect_uri:WITHINGS.redirect, state:rnd });
@@ -1245,22 +1254,40 @@ async function withingsEnsureToken(){
   }
   return true;
 }
-async function handleWithingsCallback(){
+async function handleOAuthCallback(){
   const url = new URL(location.href);
   const code = url.searchParams.get("code");
   if (!code) return false;
   const st = url.searchParams.get("state");
-  const expected = localStorage.getItem("assiette_withings_state");
   history.replaceState({}, "", location.pathname);
-  localStorage.removeItem("assiette_withings_state");
-  if (!st || st !== expected){ toast("Connexion Withings annulée (état invalide)", true); return true; }
-  try {
-    await withingsTokenExchange(code);
-    toast("Withings connecté ✓");
-    await syncWithings(true);
-  } catch(e){ toast("Connexion Withings échouée : "+(e.message||e), true); }
-  if (state.page==="settings") renderSettings();
-  return true;
+
+  if (st && st.startsWith("withings_")){
+    const expected = localStorage.getItem("assiette_withings_state");
+    localStorage.removeItem("assiette_withings_state");
+    if (st !== expected){ toast("Connexion Withings annulée (état invalide)", true); return true; }
+    try {
+      await withingsTokenExchange(code);
+      toast("Withings connecté ✓");
+      await syncWithings(true);
+    } catch(e){ toast("Connexion Withings échouée : "+(e.message||e), true); }
+    if (state.page==="settings") renderSettings();
+    return true;
+  }
+
+  if (st && st.startsWith("strava_")){
+    const expected = localStorage.getItem("assiette_strava_state");
+    localStorage.removeItem("assiette_strava_state");
+    if (st !== expected){ toast("Connexion Strava annulée (état invalide)", true); return true; }
+    try {
+      await stravaTokenExchange(code);
+      toast("Strava connecté ✓");
+      await syncStrava(true);
+    } catch(e){ toast("Connexion Strava échouée : "+(e.message||e), true); }
+    if (state.page==="settings") renderSettings();
+    return true;
+  }
+
+  return false;
 }
 async function syncWithings(manual){
   const w = db.settings.withings; if (!w) return;
@@ -1309,6 +1336,107 @@ function renderWithingsRow(){
       <button class="btn ghost" style="color:var(--critical)" onclick="disconnectWithings()">Déconnecter</button>
     </div>`;
 }
+/* ================= Strava ================= */
+function connectStrava(){
+  const rnd = "strava_"+uid()+uid();
+  localStorage.setItem("assiette_strava_state", rnd);
+  const params = new URLSearchParams({ response_type:"code", client_id:STRAVA.clientId,
+    scope:STRAVA.scope, redirect_uri:STRAVA.redirect, state:rnd });
+  location.href = "https://www.strava.com/oauth/authorize?"+params.toString();
+}
+function disconnectStrava(){
+  db.settings.strava = null;
+  save(); toast("Strava déconnecté");
+  if (state.page==="settings") renderSettings();
+}
+async function stravaTokenExchange(code){
+  const r = await fetch(STRAVA.worker+"/strava/token", { method:"POST", headers:{"content-type":"application/json"},
+    body: JSON.stringify({ code, redirect_uri: STRAVA.redirect }) });
+  const data = await r.json();
+  const b = data.body;
+  db.settings.strava = { access:b.access_token, refresh:b.refresh_token,
+    expiresAt: Date.now()+b.expires_in*1000, athleteId:b.athlete.id, lastSync:0 };
+  save();
+}
+async function stravaRefreshToken(){
+  const s = db.settings.strava; if (!s) return false;
+  const r = await fetch(STRAVA.worker+"/strava/refresh", { method:"POST", headers:{"content-type":"application/json"},
+    body: JSON.stringify({ refresh_token: s.refresh }) });
+  const data = await r.json().catch(()=>({error:true}));
+  if (data.error) return false;
+  const b = data.body;
+  s.access = b.access_token; s.refresh = b.refresh_token; s.expiresAt = Date.now()+b.expires_in*1000;
+  save();
+  return true;
+}
+async function stravaEnsureToken(){
+  const s = db.settings.strava; if (!s) return false;
+  if (Date.now() > s.expiresAt-60000){
+    const ok = await stravaRefreshToken();
+    if (!ok) return false;
+  }
+  return true;
+}
+function workoutsOfDay(iso){
+  return Object.values(db.workouts).filter(w=>w.date===iso);
+}
+function kcalOutOfDay(iso){
+  return workoutsOfDay(iso).reduce((sum,w)=>sum+(w.kcal||0), 0);
+}
+async function syncStrava(manual){
+  const s = db.settings.strava; if (!s) return;
+  const ok = await stravaEnsureToken();
+  if (!ok){ disconnectStrava(); if (manual) toast("Connexion Strava expirée — reconnecte-toi.", true); return; }
+  try {
+    const r = await fetch(STRAVA.worker+"/strava/activities", { method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({ access_token: s.access, since: s.lastSync||0 }) });
+    const data = await r.json();
+    if (data.error){ disconnectStrava(); if (manual) toast("Connexion Strava expirée — reconnecte-toi.", true); return; }
+    const activities = data.body || [];
+    const affectedDays = new Set();
+    let count = 0;
+    for (const act of activities){
+      const actDetail = await fetch(STRAVA.worker+"/strava/activity", { method:"POST", headers:{"content-type":"application/json"},
+        body: JSON.stringify({ access_token: s.access, activity_id: act.id }) }).then(r=>r.json()).then(d=>d.body);
+      const iso = act.start_date_local.slice(0,10);
+      db.workouts[String(act.id)] = {
+        date: iso, debut: act.start_date_local.slice(11,16), type: act.sport_type,
+        nom: act.name, duree_min: Math.round(actDetail.moving_time/60),
+        distance_km: r1(actDetail.distance/1000), denivele_m: Math.round(actDetail.total_elevation_gain||0),
+        kcal: actDetail.calories||0, fc_moy: actDetail.average_heartrate||null, fc_max: actDetail.max_heartrate||null,
+        relative_effort: actDetail.suffer_score||null, rpe: actDetail.perceived_exertion||null,
+        rpeSrc: actDetail.perceived_exertion ? "strava" : null, notes:"", source:"strava"
+      };
+      affectedDays.add(iso);
+      count++;
+    }
+    affectedDays.forEach(iso=>{
+      const prev = dayInfo(iso);
+      const manualKcalOut = prev.kcalOut||0;
+      const stravaKcalOut = kcalOutOfDay(iso);
+      db.days[iso] = { ...prev, kcalOut: Math.max(manualKcalOut, stravaKcalOut), exercice:true };
+    });
+    s.lastSync = Math.floor(Date.now()/1000);
+    save();
+    if (manual) toast(count ? count+" séance(s) importée(s) ✓" : "Aucune nouvelle séance");
+    refresh();
+    if (state.page==="settings") renderSettings();
+  } catch(e){ if (manual) toast("Sync Strava échouée : "+(e.message||e), true); }
+}
+function renderStravaRow(){
+  const s = db.settings.strava, el = $("strava-row");
+  if (!s){
+    el.innerHTML = `<div><div style="font-weight:600">Strava — sync auto</div><div class="tiny">Connecte Strava pour importer tes séances d'entraînement</div></div>
+      <button class="btn ghost" onclick="connectStrava()">Connecter Strava</button>`;
+    return;
+  }
+  const last = s.lastSync ? "Dernière sync : "+new Date(s.lastSync*1000).toLocaleString("fr-FR") : "Pas encore synchronisé";
+  el.innerHTML = `<div><div style="font-weight:600">Strava — <span style="color:var(--goodtext)">connecté ✓</span></div><div class="tiny">${last}</div></div>
+    <div class="row" style="gap:8px">
+      <button class="btn ghost" onclick="syncStrava(true)">Synchroniser</button>
+      <button class="btn ghost" style="color:var(--critical)" onclick="disconnectStrava()">Déconnecter</button>
+    </div>`;
+}
 /* ================= Réglages ================= */
 function renderSettings(){
   const g = db.settings.goals;
@@ -1324,6 +1452,7 @@ function renderSettings(){
   $("s-model").value = db.settings.model||"claude-sonnet-4-5";
   updateGoalPreview();
   renderWithingsRow();
+  renderStravaRow();
 }
 document.querySelectorAll("#goal-mode-chips .chip").forEach(c=>{
   c.addEventListener("click", ()=>{ db.settings.goals.mode = c.dataset.mode; renderSettings(); });
@@ -1411,8 +1540,9 @@ renderHome();
 if ("serviceWorker" in navigator && location.protocol === "https:")
   navigator.serviceWorker.register("sw.js").catch(()=>{});
 (async ()=>{
-  const handled = await handleWithingsCallback();
+  const handled = await handleOAuthCallback();
   if (!handled && db.settings.withings) await syncWithings(false);
+  if (!handled && db.settings.strava) await syncStrava(false);
 })();
 </script>
 </body>
