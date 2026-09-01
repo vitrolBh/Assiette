@@ -451,6 +451,7 @@ nav.tabs svg { width:22px; height:22px; }
       <button class="chip" data-t="déjeuner">Déjeuner</button>
       <button class="chip" data-t="dîner">Dîner</button>
       <button class="chip" data-t="collation">Collation</button>
+      <button class="chip" data-t="intra-effort">⚡ Intra</button>
     </div>
   </div>
   <div id="add-fav-section" style="display:none;margin-bottom:14px">
@@ -562,7 +563,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.6.1";
+const APP_VERSION = "1.6.2";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -639,8 +640,12 @@ function computeGoals(){
 
 /* ================= Données jour ================= */
 function mealsOf(date){ return db.meals.filter(m=>m.date===date).sort((a,b)=>(a.time||"").localeCompare(b.time||"")); }
-function totalsOf(date){
-  return mealsOf(date).reduce((t,m)=>({ kcal:t.kcal+(+m.kcal||0), prot:t.prot+(+m.prot||0), gluc:t.gluc+(+m.gluc||0), lip:t.lip+(+m.lip||0) }), {kcal:0,prot:0,gluc:0,lip:0});
+function totalsOf(date, opts){
+  const meals = mealsOf(date).filter(m=>!opts?.horsIntra || !m.intraEffort);
+  return meals.reduce((t,m)=>({ kcal:t.kcal+(+m.kcal||0), prot:t.prot+(+m.prot||0), gluc:t.gluc+(+m.gluc||0), lip:t.lip+(+m.lip||0) }), {kcal:0,prot:0,gluc:0,lip:0});
+}
+function intraEffortOf(date){
+  return mealsOf(date).filter(m=>m.intraEffort).reduce((t,m)=>({ gluc:t.gluc+(+m.gluc||0) }), {gluc:0});
 }
 function dayInfo(date){ return db.days[date] || {}; }
 
@@ -670,14 +675,16 @@ const MACRO_DEFS = [
 function renderHome(){
   const date = todayStr();
   $("home-date").textContent = fmtDate(date);
-  const goals = computeGoals(), tot = totalsOf(date);
+  const goals = computeGoals(), tot = totalsOf(date), totHorsIntra = totalsOf(date, {horsIntra:true}), intra = intraEffortOf(date);
   const left = goals.kcal - tot.kcal;
   $("home-kcal-left").textContent = Math.abs(r0(left)).toLocaleString("fr-FR");
   $("home-kcal-lbl").textContent = left>=0 ? "kcal restantes" : "kcal au-dessus";
   $("home-kcal-left").style.color = left>=0 ? "" : "var(--critical)";
   drawRing($("home-ring"), tot, goals);
   $("home-kcal-detail").innerHTML = `<span class="num">${r0(tot.kcal).toLocaleString("fr-FR")}</span> kcal ingérées sur un objectif de <span class="num">${goals.kcal.toLocaleString("fr-FR")}</span>`;
-  $("home-macros").innerHTML = MACRO_DEFS.map(m=>macroBar(m, tot[m.key], goals[m.key])).join("");
+  let macroHTML = MACRO_DEFS.map(m=>macroBar(m, totHorsIntra[m.key], goals[m.key])).join("");
+  if (intra.gluc > 0) macroHTML += `<div class="tiny" style="color:var(--muted);margin-top:8px">dont ⚡ ${r0(intra.gluc)} g de glucides à l'effort</div>`;
+  $("home-macros").innerHTML = macroHTML;
   // 7 jours
   $("home-days7").innerHTML = Array.from({length:7},(_,i)=>{
     const d = addDays(date, i-6);
@@ -722,7 +729,7 @@ function renderMealList(el, date){
     el.innerHTML = `<div class="empty"><div class="e">🍽️</div>Aucun repas pour l’instant.<br>Touche <b>+</b> pour ajouter par photo, dictée ou saisie.</div>`;
     return;
   }
-  const ICONS = { "petit-déjeuner":"☕️", "déjeuner":"🍽️", "dîner":"🌙", "collation":"🍎" };
+  const ICONS = { "petit-déjeuner":"☕️", "déjeuner":"🍽️", "dîner":"🌙", "collation":"🍎", "intra-effort":"⚡" };
   el.innerHTML = items.map(m=>`<button class="meal" style="width:100%;text-align:left" onclick="openEditMeal('${m.id}')">
     <div class="thumb">${m.thumb?`<img src="${m.thumb}" alt="">`:(ICONS[m.type]||"🍽️")}</div>
     <div class="info"><div class="t">${esc(m.name)}</div>
@@ -738,12 +745,14 @@ function renderDay(){
   $("day-picker").value = d;
   $("day-title").textContent = d===todayStr() ? "Aujourd’hui" : fmtDate(d);
   $("day-sub").textContent = d===todayStr() ? fmtDate(d) : "";
-  const goals = computeGoals(), tot = totalsOf(d), di = dayInfo(d);
+  const goals = computeGoals(), tot = totalsOf(d), totHorsIntra = totalsOf(d, {horsIntra:true}), intra = intraEffortOf(d), di = dayInfo(d);
   const net = tot.kcal - (di.kcalOut||0) - 0;
   $("day-tiles").innerHTML = `
     <div class="tile"><div class="l">Ingéré</div><div class="v num">${r0(tot.kcal).toLocaleString("fr-FR")}</div><div class="tiny num">objectif ${goals.kcal.toLocaleString("fr-FR")} kcal</div></div>
     <div class="tile"><div class="l">Dépensé (activité)</div><div class="v num">${di.kcalOut?r0(di.kcalOut).toLocaleString("fr-FR"):"—"}</div><div class="tiny">${di.exercice?"exercice ✓":"pas d’exercice noté"}</div></div>`;
-  $("day-macros").innerHTML = MACRO_DEFS.map(m=>macroBar(m, tot[m.key], goals[m.key])).join("");
+  let macroHTML = MACRO_DEFS.map(m=>macroBar(m, totHorsIntra[m.key], goals[m.key])).join("");
+  if (intra.gluc > 0) macroHTML += `<div class="tiny" style="color:var(--muted);margin-top:8px">dont ⚡ ${r0(intra.gluc)} g de glucides à l’effort</div>`;
+  $("day-macros").innerHTML = macroHTML;
   renderMealList($("day-meals"), d);
   const parts = [];
   if (di.poids) parts.push(`⚖️ <b class="num">${r1(di.poids)} kg</b>`);
@@ -1607,9 +1616,19 @@ async function syncStrava(manual){
       const stravaKcalOut = kcalOutOfDay(iso);
       db.days[iso] = { ...prev, kcalOut: Math.max(manualKcalOut, stravaKcalOut), exercice:true };
     });
+    let suggestIntra = null;
+    for (const iso of affectedDays){
+      const dayWorkouts = workoutsOfDay(iso);
+      const longActivity = dayWorkouts.find(w=>w.duree_min > 75);
+      if (longActivity && !mealsOf(iso).some(m=>m.intraEffort)){
+        suggestIntra = iso;
+        break;
+      }
+    }
     s.lastSync = Math.floor(Date.now()/1000);
     save();
     if (manual) toast(count ? count+" séance(s) importée(s) ✓" : "Aucune nouvelle séance");
+    if (suggestIntra){ toast("Tu as pris quelque chose pendant ta sortie ?"); setTimeout(()=>{ state.add.type = "intra-effort"; state.add.date = suggestIntra; openSheet("sheet-add"); }, 500); }
     refresh();
     if (state.page==="settings") renderSettings();
   } catch(e){ if (manual) toast("Sync Strava échouée : "+(e.message||e), true); }
