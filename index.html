@@ -296,6 +296,11 @@ nav.tabs svg { width:22px; height:22px; }
     <h2>Séances récentes</h2>
     <div id="training-workouts"></div>
   </div>
+  <div class="card">
+    <h2>Forme &amp; douleurs (30 j)</h2>
+    <div id="training-pain" style="overflow-x:auto"></div>
+    <div style="margin-top:10px"><button class="btn sec" onclick="openSheet('sheet-checkin')">Saisir le check-in</button></div>
+  </div>
 </main>
 
 <!-- ============ PAGE : TENDANCES ============ -->
@@ -538,6 +543,22 @@ nav.tabs svg { width:22px; height:22px; }
     </div>
   </div>
   <div class="tiny" style="margin-bottom:10px">Poids : synchronisable auto via Withings (Réglages → Sources de données). Pas &amp; kcal : visibles dans l’app Santé de l’iPhone.</div>
+  <hr style="margin:16px 0;border:none;border-top:1px solid var(--grid)">
+  <div class="field"><label>Forme du jour</label>
+    <div class="chips" id="ci-forme-chips" style="display:flex;gap:8px">
+      <button class="chip" data-forme="1" onclick="setForme(1)">1️⃣ Épuisé</button>
+      <button class="chip" data-forme="2" onclick="setForme(2)">2️⃣</button>
+      <button class="chip" data-forme="3" onclick="setForme(3)">3️⃣ Normal</button>
+      <button class="chip" data-forme="4" onclick="setForme(4)">4️⃣</button>
+      <button class="chip" data-forme="5" onclick="setForme(5)">5️⃣ Très bien</button>
+    </div>
+    <input type="hidden" id="ci-forme">
+  </div>
+  <div class="field"><label>Sommeil (heures)</label><input type="number" id="ci-sommeil" inputmode="decimal" step="0.5" min="0" placeholder="optionnel"></div>
+  <div class="field"><label style="margin-bottom:8px;display:block">Douleurs</label>
+    <div id="ci-douleurs-list" style="margin-bottom:10px"></div>
+    <button class="btn sec" onclick="addDouleur()">+ Ajouter une douleur</button>
+  </div>
   <button class="btn" onclick="saveCheckin()">Enregistrer</button>
 </div>
 
@@ -563,7 +584,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.6.2";
+const APP_VERSION = "1.6.3";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -825,6 +846,71 @@ function getRPEMessage(w){
   if (ecart < -25) return "Séance plus exigeante physiologiquement que ressentie — attention à ne pas sous-estimer la récupération.";
   return "Ressenti cohérent avec l'effort mesuré.";
 }
+function renderPainFrise(days){
+  const dates = Array.from({length:days},(_,i)=>addDays(todayStr(), i-days+1));
+  const allZones = new Set();
+  dates.forEach(d=>{ const di = dayInfo(d); if (di.douleurs) di.douleurs.forEach(doul=>allZones.add(doul.zone)); });
+  if (allZones.size === 0) return `<div class="tiny" style="color:var(--muted);text-align:center;padding:20px">Aucune douleur saisie sur cette période.</div>`;
+  const zones = Array.from(allZones);
+  const maxCharge = Math.max(...Array.from({length:Math.ceil(days/7)},(_,w)=>weekStats(Math.ceil(days/7)-1-w).charge), 1);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${dates.length*20+60} ${zones.length*30+40}`);
+  svg.setAttribute("style", "width:100%;height:auto;overflow:visible");
+  const defs = svg.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "defs"));
+  const grad = defs.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "linearGradient"));
+  grad.setAttribute("id", "painGrad");
+  grad.innerHTML = `<stop offset="0%" style="stop-color:var(--good);stop-opacity:0.2"/><stop offset="100%" style="stop-color:var(--critical);stop-opacity:0.6"/>`;
+  zones.forEach((zone, zidx)=>{
+    const y = 20 + zidx*30;
+    svg.appendChild(Object.assign(document.createElementNS("http://www.w3.org/2000/svg", "text"), {textContent:DOULEUR_LABELS[zone]||zone, x:5, y:y+8, style:"font-size:11px;color:var(--muted)"}));
+    dates.forEach((d, didx)=>{
+      const x = 50 + didx*20;
+      const di = dayInfo(d);
+      const doul = (di.douleurs||[]).find(doul=>doul.zone === zone);
+      if (doul){
+        const intensity = Math.max(0, Math.min(10, doul.intensite));
+        const opacity = intensity / 10;
+        const rect = svg.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "rect"));
+        rect.setAttribute("x", x-8);
+        rect.setAttribute("y", y-6);
+        rect.setAttribute("width", "16");
+        rect.setAttribute("height", "12");
+        rect.setAttribute("rx", "2");
+        rect.setAttribute("fill", "var(--critical)");
+        rect.setAttribute("opacity", opacity);
+        const text = svg.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "text"));
+        text.textContent = intensity;
+        text.setAttribute("x", x);
+        text.setAttribute("y", y+2);
+        text.setAttribute("text-anchor", "middle");
+        text.setAttribute("style", "font-size:9px;font-weight:600;color:var(--ink);pointer-events:none");
+      }
+    });
+  });
+  const chargeY = 20 + zones.length*30;
+  svg.appendChild(Object.assign(document.createElementNS("http://www.w3.org/2000/svg", "text"), {textContent:"Charge", x:5, y:chargeY+8, style:"font-size:11px;color:var(--muted)"}));
+  for (let w = 0; w < Math.ceil(dates.length/7); w++){
+    const weekDates = getWeekDates(Math.ceil(dates.length/7)-1-w);
+    const charge = weekStats(Math.ceil(dates.length/7)-1-w).charge;
+    const weekStart = dates.findIndex(d=>weekDates.includes(d));
+    const weekEnd = Math.min(weekStart+7, dates.length)-1;
+    if (weekStart >= 0 && weekStart < dates.length){
+      const x1 = 50 + weekStart*20;
+      const x2 = 50 + weekEnd*20 + 20;
+      const h = Math.max(2, (charge/maxCharge)*20);
+      const rect = svg.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "rect"));
+      rect.setAttribute("x", x1);
+      rect.setAttribute("y", chargeY - h);
+      rect.setAttribute("width", x2-x1);
+      rect.setAttribute("height", h);
+      rect.setAttribute("fill", "var(--accent)");
+      rect.setAttribute("opacity", "0.3");
+    }
+  }
+  const div = document.createElement("div");
+  div.appendChild(svg);
+  return div.innerHTML;
+}
 function renderTraining(){
   const this_week = weekStats(0);
   const last_week = weekStats(1);
@@ -873,6 +959,7 @@ function renderTraining(){
       </div>
     </div>`;
   }).join("");
+  if ($("training-pain")){ $("training-pain").innerHTML = renderPainFrise(30); }
 }
 function openRPESelector(date, id){
   const w = db.workouts[String(id)];
@@ -914,6 +1001,62 @@ function closeSheets(keepBg){
 }
 
 /* ================= Check-in ================= */
+const DOULEUR_ZONES = ["lombaires","cervicales","genou_g","genou_d","cheville_g","cheville_d","mollet_g","mollet_d","ischios_g","ischios_d","hanche_g","hanche_d","pied_g","pied_d","épaule","autre"];
+const DOULEUR_LABELS = {"lombaires":"Lombaires","cervicales":"Cervicales","genou_g":"Genou G","genou_d":"Genou D","cheville_g":"Cheville G","cheville_d":"Cheville D","mollet_g":"Mollet G","mollet_d":"Mollet D","ischios_g":"Ischios G","ischios_d":"Ischios D","hanche_g":"Hanche G","hanche_d":"Hanche D","pied_g":"Pied G","pied_d":"Pied D","épaule":"Épaule","autre":"Autre"};
+const DOULEUR_CONTEXTES = ["repos","effort","après"];
+let state_checkin_douleurs = [];
+function setForme(v){ $("ci-forme").value = v; document.querySelectorAll("#ci-forme-chips .chip").forEach(c=>c.classList.toggle("on", parseInt(c.dataset.forme)===v)); }
+function renderDouleursList(){
+  $("ci-douleurs-list").innerHTML = state_checkin_douleurs.map((d,idx)=>`
+    <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;padding:8px;background:var(--page);border-radius:8px">
+      <div style="flex:1">
+        <div style="font-size:12px;font-weight:600;color:var(--ink2)">${DOULEUR_LABELS[d.zone] || d.zone}</div>
+        <div style="font-size:12px;color:var(--muted)">Intensité ${d.intensite}/10 · ${DOULEUR_CONTEXTES.includes(d.contexte)?d.contexte:"—"}</div>
+      </div>
+      <button class="btn ghost" style="color:var(--critical);width:auto;padding:4px 6px;font-size:12px" onclick="removeDouleur(${idx})">✕</button>
+    </div>
+  `).join("");
+}
+function addDouleur(){
+  state_checkin_douleurs.push({zone:"lombaires",intensite:5,contexte:"effort"});
+  openEditDouleur(state_checkin_douleurs.length-1);
+}
+function removeDouleur(idx){
+  state_checkin_douleurs.splice(idx,1);
+  renderDouleursList();
+}
+function openEditDouleur(idx){
+  const d = state_checkin_douleurs[idx];
+  const html = `
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <div>
+      <label style="display:block;font-size:12px;font-weight:600;color:var(--ink2);margin-bottom:6px">Zone</label>
+      <select id="douleur-zone" style="width:100%">${DOULEUR_ZONES.map(z=>`<option value="${z}" ${z===d.zone?"selected":""}>${DOULEUR_LABELS[z]}</option>`).join("")}</select>
+    </div>
+    <div>
+      <label style="display:block;font-size:12px;font-weight:600;color:var(--ink2);margin-bottom:6px">Intensité : <span id="douleur-val">${d.intensite}</span>/10</label>
+      <input type="range" id="douleur-intensite" min="0" max="10" value="${d.intensite}" style="width:100%" oninput="$('douleur-val').textContent = this.value">
+    </div>
+    <div>
+      <label style="display:block;font-size:12px;font-weight:600;color:var(--ink2);margin-bottom:6px">Contexte</label>
+      <div class="chips" style="display:flex;gap:6px">${DOULEUR_CONTEXTES.map(c=>`<button class="chip ${c===d.contexte?"on":""}" onclick="$('douleur-contexte').value='${c}';[...this.parentElement.children].forEach(b=>b.classList.toggle('on',b.textContent.toLowerCase()==='${c}'))">${c}</button>`).join("")}</div>
+      <input type="hidden" id="douleur-contexte" value="${d.contexte}">
+    </div>
+  </div>
+  `;
+  const el = $("toast");
+  el.innerHTML = html + `<div style="display:flex;gap:8px;margin-top:12px"><button class="btn" onclick="saveDouleur(${idx},this.closest('.toast'))">Valider</button><button class="btn sec" onclick="closeToast()">Annuler</button></div>`;
+  el.classList.add("show");
+}
+function saveDouleur(idx, el){
+  state_checkin_douleurs[idx] = {
+    zone: $("douleur-zone").value,
+    intensite: parseInt($("douleur-intensite").value),
+    contexte: $("douleur-contexte").value
+  };
+  renderDouleursList();
+  closeToast();
+}
 function fillCheckin(){
   const d = state.page==="day" ? state.selectedDay : todayStr();
   state.checkinDay = d;
@@ -921,17 +1064,26 @@ function fillCheckin(){
   const di = dayInfo(d);
   $("ci-poids").value = di.poids||""; $("ci-pas").value = di.pas||"";
   $("ci-kcalout").value = di.kcalOut||""; $("ci-exo").checked = !!di.exercice;
+  if (di.forme) setForme(di.forme);
+  $("ci-sommeil").value = di.sommeil_h||"";
+  state_checkin_douleurs = (di.douleurs || []).slice();
+  renderDouleursList();
 }
 function saveCheckin(){
   const d = state.checkinDay || todayStr();
   const prev = dayInfo(d);
   const poids = parseFloat($("ci-poids").value)||null;
+  const forme = parseInt($("ci-forme").value)||null;
+  const sommeil = parseFloat($("ci-sommeil").value)||null;
   db.days[d] = { ...prev,
     poids,
     poidsSrc: poids==null ? prev.poidsSrc : (poids===prev.poids ? prev.poidsSrc : "manuel"),
     pas: parseInt($("ci-pas").value)||null,
     kcalOut: parseInt($("ci-kcalout").value)||null,
-    exercice: $("ci-exo").checked };
+    exercice: $("ci-exo").checked,
+    forme: forme,
+    sommeil_h: sommeil||null,
+    douleurs: state_checkin_douleurs };
   save(); closeSheets(); toast("Check-in enregistré ✓");
   if (state.page==="day") renderDay(); else renderHome();
 }
