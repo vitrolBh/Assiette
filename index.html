@@ -280,6 +280,24 @@ nav.tabs svg { width:22px; height:22px; }
   </div>
 </main>
 
+<!-- ============ PAGE : ENTRAÎNEMENT ============ -->
+<main id="page-training" class="page">
+  <div class="topbar">
+    <div>
+      <h1>Entraînement</h1>
+      <div class="sub">Charge et séances</div>
+    </div>
+  </div>
+  <div class="card">
+    <h2>Cette semaine</h2>
+    <div class="tiles" id="training-week-tiles"></div>
+  </div>
+  <div class="card">
+    <h2>Séances récentes</h2>
+    <div id="training-workouts"></div>
+  </div>
+</main>
+
 <!-- ============ PAGE : TENDANCES ============ -->
 <main id="page-trends" class="page">
   <div class="topbar">
@@ -411,6 +429,8 @@ nav.tabs svg { width:22px; height:22px; }
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>Accueil</button>
   <button data-page="day" aria-label="Journal">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="16" rx="2"/><path d="M8 3v4M16 3v4M4 11h16"/></svg>Journal</button>
+  <button data-page="training" aria-label="Entraînement">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9c0-1 .895-2 2-2s2 1 2 2v6c0 1-.895 2-2 2s-2-1-2-2V9z"/><path d="M14 9c0-1 .895-2 2-2s2 1 2 2v6c0 1-.895 2-2 2s-2-1-2-2V9z"/></svg>Entraînement</button>
   <button data-page="trends" aria-label="Tendances">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>Tendances</button>
   <button data-page="settings" aria-label="Réglages">
@@ -531,7 +551,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.5.2";
+const APP_VERSION = "1.6.0";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -624,6 +644,7 @@ function showPage(p){
   document.querySelectorAll("nav.tabs button").forEach(x=>x.classList.toggle("active", x.dataset.page===p));
   if (p==="home") renderHome();
   if (p==="day") renderDay();
+  if (p==="training") renderTraining();
   if (p==="trends") renderTrends();
   if (p==="settings") renderSettings();
   window.scrollTo(0,0);
@@ -719,6 +740,80 @@ function renderDay(){
   if (di.kcalOut) parts.push(`🔥 <b class="num">${r0(di.kcalOut)}</b> kcal dépensées`);
   if (di.exercice) parts.push(`💪 exercice`);
   $("day-checkin").innerHTML = parts.length ? parts.join(" &nbsp;·&nbsp; ") : `<span class="tiny">Rien de saisi pour ce jour — touche « Modifier ».</span>`;
+}
+
+/* ================= Rendu : Entraînement ================= */
+function getWeekDates(offset){
+  const today = new Date();
+  const diff = today.getDay() - 1;
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - diff - offset*7);
+  const dates = [];
+  for (let i=0; i<7; i++){
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    dates.push(todayStr(d));
+  }
+  return dates;
+}
+function workoutsOfWeek(weekOffset){
+  const dates = getWeekDates(weekOffset);
+  return Object.values(db.workouts).filter(w=>dates.includes(w.date));
+}
+function weekStats(weekOffset){
+  const workouts = workoutsOfWeek(weekOffset);
+  return {
+    volume_min: workouts.reduce((sum,w)=>sum+(w.duree_min||0), 0),
+    denivele_m: workouts.reduce((sum,w)=>sum+(w.denivele_m||0), 0),
+    count: workouts.length,
+    charge: workouts.reduce((sum,w)=>sum+(w.relative_effort||0), 0)
+  };
+}
+function formatChange(current, previous){
+  if (previous === 0) return current > 0 ? "+∞" : "–";
+  const pct = Math.round(((current-previous)/previous)*100);
+  const sign = pct>=0 ? "+" : "";
+  return sign+pct+"%";
+}
+function renderTraining(){
+  const this_week = weekStats(0);
+  const last_week = weekStats(1);
+  $("training-week-tiles").innerHTML = `
+    <div class="tile">
+      <div class="l">Volume</div>
+      <div class="v num">${this_week.volume_min} min</div>
+      <div class="tiny">${formatChange(this_week.volume_min, last_week.volume_min)}</div>
+    </div>
+    <div class="tile">
+      <div class="l">D+</div>
+      <div class="v num">${this_week.denivele_m} m</div>
+      <div class="tiny">${formatChange(this_week.denivele_m, last_week.denivele_m)}</div>
+    </div>
+    <div class="tile">
+      <div class="l">Séances</div>
+      <div class="v num">${this_week.count}</div>
+      <div class="tiny">${formatChange(this_week.count, last_week.count)}</div>
+    </div>
+    <div class="tile">
+      <div class="l">Charge</div>
+      <div class="v num">${r0(this_week.charge)}</div>
+      <div class="tiny">${formatChange(this_week.charge, last_week.charge)}</div>
+    </div>`;
+  const recent = Object.values(db.workouts).sort((a,b)=>(b.date+b.debut).localeCompare(a.date+a.debut)).slice(0,20);
+  $("training-workouts").innerHTML = recent.map(w=>`
+    <div style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--grid);align-items:center">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:14px;margin-bottom:2px">${w.nom}</div>
+        <div style="font-size:13px;color:var(--ink2);margin-bottom:4px">${fmtDate(w.date)} ${w.debut}</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted)">
+          <span>${w.duree_min} min</span>
+          ${w.denivele_m?`<span>${w.denivele_m} m</span>`:""}
+          ${w.kcal?`<span>${r0(w.kcal)} kcal</span>`:""}
+          ${w.fc_moy?`<span>FC ${r0(w.fc_moy)} bpm</span>`:""}
+          ${w.relative_effort?`<span>RE ${r0(w.relative_effort)}</span>`:""}
+        </div>
+      </div>
+    </div>`).join("");
 }
 
 /* ================= Sheets ================= */
