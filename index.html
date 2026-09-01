@@ -531,7 +531,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.5.1";
+const APP_VERSION = "1.5.2";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -1375,19 +1375,18 @@ async function stravaTokenExchange(code){
   const r = await fetch(STRAVA.worker+"/strava/token", { method:"POST", headers:{"content-type":"application/json"},
     body: JSON.stringify({ code, redirect_uri: STRAVA.redirect }) });
   const data = await r.json();
-  const b = data.body;
-  db.settings.strava = { access:b.access_token, refresh:b.refresh_token,
-    expiresAt: Date.now()+b.expires_in*1000, athleteId:b.athlete.id, lastSync:0 };
+  if (!data.access_token) throw new Error(data.message || "réponse Strava inattendue");
+  db.settings.strava = { access:data.access_token, refresh:data.refresh_token,
+    expiresAt: data.expires_at*1000, athleteId:data.athlete.id, lastSync:0 };
   save();
 }
 async function stravaRefreshToken(){
   const s = db.settings.strava; if (!s) return false;
   const r = await fetch(STRAVA.worker+"/strava/refresh", { method:"POST", headers:{"content-type":"application/json"},
     body: JSON.stringify({ refresh_token: s.refresh }) });
-  const data = await r.json().catch(()=>({error:true}));
-  if (data.error) return false;
-  const b = data.body;
-  s.access = b.access_token; s.refresh = b.refresh_token; s.expiresAt = Date.now()+b.expires_in*1000;
+  const data = await r.json().catch(()=>({}));
+  if (!data.access_token) return false;
+  s.access = data.access_token; s.refresh = data.refresh_token; s.expiresAt = data.expires_at*1000;
   save();
   return true;
 }
@@ -1411,15 +1410,15 @@ async function syncStrava(manual){
   if (!ok){ disconnectStrava(); if (manual) toast("Connexion Strava expirée — reconnecte-toi.", true); return; }
   try {
     const r = await fetch(STRAVA.worker+"/strava/activities", { method:"POST", headers:{"content-type":"application/json"},
-      body: JSON.stringify({ access_token: s.access, since: s.lastSync||0 }) });
+      body: JSON.stringify({ access_token: s.access, after: s.lastSync||0 }) });
     const data = await r.json();
-    if (data.error){ disconnectStrava(); if (manual) toast("Connexion Strava expirée — reconnecte-toi.", true); return; }
-    const activities = data.body || [];
+    if (!Array.isArray(data)){ disconnectStrava(); if (manual) toast("Connexion Strava expirée — reconnecte-toi.", true); return; }
     const affectedDays = new Set();
     let count = 0;
-    for (const act of activities){
+    for (const act of data){
       const actDetail = await fetch(STRAVA.worker+"/strava/activity", { method:"POST", headers:{"content-type":"application/json"},
-        body: JSON.stringify({ access_token: s.access, activity_id: act.id }) }).then(r=>r.json()).then(d=>d.body);
+        body: JSON.stringify({ access_token: s.access, id: act.id }) }).then(r=>r.json());
+      if (!actDetail.id) continue;
       const iso = act.start_date_local.slice(0,10);
       db.workouts[String(act.id)] = {
         date: iso, debut: act.start_date_local.slice(11,16), type: act.sport_type,
