@@ -35,6 +35,9 @@ un seul constructeur de contexte.
 - **Bilan du soir** : interrupteur `db.settings.coachSoir` + heure (défaut 21 h).
 - **Style du coach** (chips → `db.settings.coachTon`) : factuel · encourageant ·
   cash. Défaut : factuel. (Utile pour le redesign : le ton fait partie du produit.)
+- **Compléments alimentaires** (→ `db.settings.complements`) : liste libre, saisie
+  manuelle ou extraite d'une photo d'étiquette (Ben prend une cure personnalisée
+  Cuure). Voir § 6b.
 
 ---
 
@@ -59,7 +62,7 @@ présent :
     phase, objectifs
   },
   sante: { forme_jour, sommeil_h, douleurs_actives, poids_tendance_kg_sem },
-  regime, allergies, ton
+  regime, allergies, complements, ton
 }
 ```
 
@@ -150,6 +153,21 @@ Ben a demandé un suivi des micronutriments. Deux niveaux, il faut choisir le bo
 Si un jour tu veux du chiffré fiable, la vraie voie est d'intégrer **OpenFoodFacts**
 (base ouverte, gratuite, avec code-barres) pour les produits emballés — à mettre
 dans la roadmap, pas dans ce module.
+
+### 6b. Compléments alimentaires
+
+`db.settings.complements` : liste libre (saisie manuelle, ou extraite d'une photo
+d'étiquette via le même moteur d'analyse que les repas — Ben prend une cure
+personnalisée Cuure). Format souple : `[{ nom:"Fer bisglycinate", dose:"14 mg" }]`
+ou simple texte si l'extraction est approximative.
+
+Injectée dans le contexte du coach (§ 3). Le modèle doit :
+- **en tenir compte** dans la couverture du § 6a : une famille déjà complémentée
+  n'est pas signalée comme manquante — au mieux mentionnée (« ton fer passe surtout
+  par la complémentation, l'alimentaire reste léger ») ;
+- **ne jamais recommander** d'ajouter un complément, d'en changer, ni de modifier
+  une dose. Ce n'est ni son rôle ni son domaine — les suggestions restent
+  alimentaires. Si une carence semble se dessiner, il oriente vers un professionnel.
 
 ---
 
