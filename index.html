@@ -446,6 +446,14 @@ nav.tabs svg { width:22px; height:22px; }
       <label>Compléments alimentaires (une par ligne)</label>
       <textarea id="s-complements" rows="2" placeholder="Ex: Fer bisglycinate 14 mg&#10;Oméga-3 1000 mg"></textarea>
     </div>
+    <div class="field">
+      <label style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" id="s-coach-soir" style="width:auto">
+        Bilan du soir automatique
+      </label>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">À la première ouverture après l'heure indiquée</div>
+      <input type="time" id="s-coach-soir-heure" style="margin-top:6px" value="21:00">
+    </div>
     <button class="btn" style="margin-top:12px" onclick="saveCoachSettings()">Enregistrer</button>
     <div class="tiny" style="margin-top:10px;color:var(--muted)">Suggestions générées par IA à partir de tes saisies. Ce n'est pas un avis médical ni diététique.</div>
   </div>
@@ -716,7 +724,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.6.8";
+const APP_VERSION = "1.7.0";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -1031,18 +1039,53 @@ function buildCoachContext(){
     ton: db.settings.coachTon
   };
 }
+function hashContext(ctx){
+  const str = JSON.stringify({meals:mealsOf(todayStr()).map(m=>`${m.name}:${m.kcal}`).join(','), workouts:Object.values(db.workouts).filter(w=>w.date===todayStr()).map(w=>`${w.nom}:${w.kcal}`).join(',')});
+  return Math.abs(str.split('').reduce((a,b)=>(a<<5)-a+b.charCodeAt(0)|0, 0)).toString(36);
+}
 async function askCoach(){
   const ctx = buildCoachContext();
   const cacheKey = `${todayStr()}_quoi`;
-  if (db.coachCache[cacheKey]){ return db.coachCache[cacheKey]; }
+  const ctxHash = hashContext(ctx);
+  if (db.coachCache[cacheKey] && db.coachCache[cacheKey].ctxHash === ctxHash){ return db.coachCache[cacheKey].result; }
 
   const prompt = `Contexte: ${JSON.stringify(ctx)}`;
   const messages = [{role:"user", content:prompt}];
+  const model = "claude-haiku-4-5-20251001";
 
   try {
-    const resp = await callClaude(messages, SYS_PROMPT_COACH_QUOI);
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST", headers:{"content-type":"application/json", "x-api-key":db.settings.apiKey, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true"},
+      body:JSON.stringify({model, max_tokens:1000, system:SYS_PROMPT_COACH_QUOI, messages})});
+    if (!r.ok) throw new Error((await r.json()).error?.message || `Erreur ${r.status}`);
+    const resp = (await r.json()).content[0].text;
     const result = parseAI(resp);
-    db.coachCache[cacheKey] = result;
+    db.coachCache[cacheKey] = {ctxHash, result};
+    save();
+    return result;
+  } catch(err){ throw err; }
+}
+async function askCoachSoir(){
+  const ctx = buildCoachContext();
+  const cacheKey = `${todayStr()}_soir`;
+  const ctxHash = hashContext(ctx);
+  if (db.coachCache[cacheKey] && db.coachCache[cacheKey].ctxHash === ctxHash){ return db.coachCache[cacheKey].result; }
+
+  const mealsCount = mealsOf(todayStr()).length;
+  if (mealsCount < 2){ return {bilan:"Journée peu renseignée, je ne peux pas en tirer grand-chose.", points_forts:[], ajustements:[], demain:"", qualite_donnees:`Seulement ${mealsCount} repas enregistré(s).`}; }
+
+  const prompt = `Contexte: ${JSON.stringify(ctx)}`;
+  const messages = [{role:"user", content:prompt}];
+  const model = "claude-sonnet-4-5";
+
+  try {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST", headers:{"content-type":"application/json", "x-api-key":db.settings.apiKey, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true"},
+      body:JSON.stringify({model, max_tokens:1500, system:SYS_PROMPT_COACH_SOIR, messages})});
+    if (!r.ok) throw new Error((await r.json()).error?.message || `Erreur ${r.status}`);
+    const resp = (await r.json()).content[0].text;
+    const result = parseAI(resp);
+    db.coachCache[cacheKey] = {ctxHash, result, timestamp:Date.now()};
     save();
     return result;
   } catch(err){ throw err; }
@@ -1769,6 +1812,18 @@ function deleteMeal(){
 function refresh(){ if (state.page==="day") renderDay(); else if (state.page==="trends") renderTrends(); else renderHome(); }
 
 /* ================= Claude API ================= */
+const SYS_PROMPT_COACH_SOIR = `Tu es un coach nutrition qui fait le bilan du soir de Ben.
+
+RÈGLES NON NÉGOCIABLES :
+1. **Pas de bilan si données insuffisantes** : si < 2 repas enregistrés, refuse et dis: "Journée peu renseignée, je ne peux pas en tirer grand-chose."
+2. **AUCUN jugement moral** : pas de "bon/mauvais aliment", pas "tu as craqué", pas "compensation par du sport". On parle d'apports vs objectifs, jamais de mérite/culpabilité.
+3. **Sous-alimentation répétée** : si apports kcal/prot bien en dessous plusieurs jours, le signaler COMME UN RISQUE (surtout reprise post-blessure: consolidation demande énergie+prot), pas comme réussite.
+4. **Reprendre garde-fous** : si douleur/problème de santé signalé, le noter.
+5. **Ton** : ${db.settings.coachTon || "factuel"}. Direct, concret, français, tutoiement.
+
+Réponds UNIQUEMENT en JSON strict au format exact:
+{"bilan":"2-3 phrases jour (nutrition+sport liés)","points_forts":["..."],"ajustements":[{"quoi":"...","pourquoi":"..."}],"demain":"1-2 phrases orientées séance prévue","qualite_donnees":"phrase si repas manquent"}`;
+
 const SYS_PROMPT_COACH_QUOI = `Tu es un coach nutrition. Ben te demande « Que manger maintenant ? ».
 
 RÈGLES NON NÉGOCIABLES :
@@ -2434,27 +2489,31 @@ function saveSportSettings(){
   toast("Paramètres sport enregistrés ✓");
   renderSettings();
 }
-function openCoachSheet(){
+function openCoachSheet(type){
   const ctx = buildCoachContext();
   $("coach-loading").style.display = "block";
   $("coach-error").style.display = "none";
   $("coach-result").innerHTML = "";
+  const cacheKey = `${todayStr()}_${type || "quoi"}`;
   openSheet("sheet-coach");
-  askCoach().then(result=>{
+  const askFn = (type === "soir") ? askCoachSoir : askCoach;
+  const promise = db.coachCache[cacheKey]?.result ? Promise.resolve(db.coachCache[cacheKey].result) : askFn();
+  promise.then(result=>{
     $("coach-loading").style.display = "none";
-    let html = `<div style="margin-bottom:12px">${result.lecture || "—"}</div>`;
-    if (result.suggestions && result.suggestions.length > 0){
-      html += `<div>${result.suggestions.map((s,i)=>`
-        <div class="card" style="margin-bottom:8px">
-          <div style="font-weight:600;font-size:13px;margin-bottom:4px">${s.plat}</div>
-          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${r0(s.kcal)} kcal · P ${r0(s.prot_g)}g · G ${r0(s.gluc_g)}g · L ${r0(s.lip_g)}g</div>
-          <div style="font-size:12px;margin-bottom:8px">${s.pourquoi}</div>
-          <div style="font-size:10px;color:var(--accent);margin-bottom:10px">Effort: ${s.effort}</div>
-          <button class="btn sec" style="width:100%" onclick="addSuggestionAsMeal(${i}, '${s.plat}', ${r0(s.kcal)}, ${r0(s.prot_g)}, ${r0(s.gluc_g)}, ${r0(s.lip_g)})">+ Ajouter comme repas</button>
-        </div>
-      `).join("")}</div>`;
+    let html = "";
+    if (type === "soir"){
+      html += `<div style="margin-bottom:12px"><strong>${result.bilan || "—"}</strong></div>`;
+      if (result.points_forts?.length) html += `<div style="margin-bottom:12px"><strong>Points forts:</strong><ul style="margin:4px 0;padding-left:20px">${result.points_forts.map(p=>`<li style="font-size:12px">${p}</li>`).join("")}</ul></div>`;
+      if (result.ajustements?.length) html += `<div style="margin-bottom:12px"><strong>Ajustements:</strong><ul style="margin:4px 0;padding-left:20px">${result.ajustements.map(a=>`<li style="font-size:12px"><strong>${a.quoi}</strong> — ${a.pourquoi}</li>`).join("")}</ul></div>`;
+      if (result.demain) html += `<div style="margin-bottom:12px"><strong>Demain:</strong> ${result.demain}</div>`;
+      if (result.qualite_donnees) html += `<div style="font-size:11px;color:var(--muted);padding:8px;background:var(--page);border-radius:8px">${result.qualite_donnees}</div>`;
+    } else {
+      html = `<div style="margin-bottom:12px">${result.lecture || "—"}</div>`;
+      if (result.suggestions && result.suggestions.length > 0){
+        html += `<div>${result.suggestions.map((s,i)=>`<div class="card" style="margin-bottom:8px"><div style="font-weight:600;font-size:13px;margin-bottom:4px">${s.plat}</div><div style="font-size:11px;color:var(--muted);margin-bottom:8px">${r0(s.kcal)} kcal · P ${r0(s.prot_g)}g · G ${r0(s.gluc_g)}g · L ${r0(s.lip_g)}g</div><div style="font-size:12px;margin-bottom:8px">${s.pourquoi}</div><div style="font-size:10px;color:var(--accent);margin-bottom:10px">Effort: ${s.effort}</div><button class="btn sec" style="width:100%" onclick="addSuggestionAsMeal(${i}, '${s.plat}', ${r0(s.kcal)}, ${r0(s.prot_g)}, ${r0(s.gluc_g)}, ${r0(s.lip_g)})">+ Ajouter comme repas</button></div>`).join("")}</div>`;
+      }
+      if (result.a_eviter){ html += `<div style="font-size:11px;color:var(--muted);padding:10px;background:var(--page);border-radius:8px">${result.a_eviter}</div>`; }
     }
-    if (result.a_eviter){ html += `<div style="font-size:11px;color:var(--muted);padding:10px;background:var(--page);border-radius:8px">${result.a_eviter}</div>`; }
     $("coach-result").innerHTML = html;
     $("coach-result").style.display = "block";
   }).catch(err=>{
@@ -2481,7 +2540,11 @@ function addSuggestionAsMeal(idx, nom, kcal, prot, gluc, lip){
 function renderCoachWidget(){
   const ctx = buildCoachContext();
   const restText = ctx.restant.kcal > 0 ? `il te reste ${ctx.restant.kcal} kcal et ${ctx.restant.prot}g de prot.` : "objectifs atteints pour aujourd'hui.";
-  $("coach-context").textContent = `Actuellement : ${r0(ctx.consomme_jour.kcal)} / ${r0(ctx.objectifs_jour.kcal)} kcal · ${restText}`;
+  let widget = `Actuellement : ${r0(ctx.consomme_jour.kcal)} / ${r0(ctx.objectifs_jour.kcal)} kcal · ${restText}`;
+  if (db.settings.coachSoir && db.coachCache[`${todayStr()}_soir`]?.result){
+    widget = `📊 Bilan disponible · ${widget}`;
+  }
+  $("coach-context").textContent = widget;
 }
 function setDiet(d){
   db.settings.diet = d;
@@ -2496,6 +2559,9 @@ function saveCoachSettings(){
   db.settings.dietNotes = $("s-dietnotes").value;
   db.settings.coachTon = $('input[name="ton"]:checked')?.value || db.settings.coachTon;
   db.settings.complements = $("s-complements").value.split('\n').map(l=>l.trim()).filter(Boolean);
+  db.settings.coachSoir = $("s-coach-soir").checked;
+  const [h, m] = $("s-coach-soir-heure").value.split(':');
+  db.settings.coachSoirHeure = parseInt(h) || 21;
   save();
   toast("Paramètres coach enregistrés ✓");
   renderSettings();
@@ -2527,6 +2593,9 @@ function renderSettings(){
   document.querySelectorAll("#ton-chips .chip").forEach(chip=>chip.classList.toggle("on", chip.dataset.ton === c.coachTon));
   $("s-dietnotes").value = c.dietNotes || "";
   $("s-complements").value = (c.complements || []).join('\n');
+  $("s-coach-soir").checked = c.coachSoir || false;
+  const hour = String(c.coachSoirHeure || 21).padStart(2, "0");
+  $("s-coach-soir-heure").value = `${hour}:00`;
 }
 document.querySelectorAll("#goal-mode-chips .chip").forEach(c=>{
   c.addEventListener("click", ()=>{ db.settings.goals.mode = c.dataset.mode; renderSettings(); });
@@ -2630,7 +2699,18 @@ function applyUpdate(){
 
 /* ================= Init ================= */
 window.addEventListener("keydown", e=>{ if (e.key==="Escape") closeSheets(); });
+async function checkBilanDuSoir(){
+  if (!db.settings.coachSoir) return;
+  const now = new Date();
+  const hour = now.getHours();
+  const coachHour = db.settings.coachSoirHeure || 21;
+  if (hour < coachHour) return;
+  const cacheKey = `${todayStr()}_soir`;
+  if (db.coachCache[cacheKey]?.timestamp && new Date(db.coachCache[cacheKey].timestamp).toDateString() === new Date().toDateString()) return;
+  try { db.coachCache[cacheKey] = {timestamp:Date.now(), result: await askCoachSoir()}; save(); } catch(e){}
+}
 renderHome();
+checkBilanDuSoir();
 if ("serviceWorker" in navigator && location.protocol === "https:"){
   navigator.serviceWorker.register("sw.js").then(reg => {
     window.__swReg = reg;
