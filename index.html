@@ -302,6 +302,11 @@ nav.tabs svg { width:22px; height:22px; }
     <div id="training-workouts"></div>
   </div>
   <div class="card">
+    <h2>Analyser ma période</h2>
+    <div class="tiny" style="color:var(--muted);margin-bottom:10px">Analyse croisée nutrition × charge × ressenti (avec garde-fous)</div>
+    <button class="btn" style="width:100%" onclick="openSheet('sheet-analyze')">Lancer l'analyse</button>
+  </div>
+  <div class="card">
     <h2>Forme &amp; douleurs (30 j)</h2>
     <div id="training-pain" style="overflow-x:auto"></div>
     <div style="margin-top:10px"><button class="btn sec" onclick="openSheet('sheet-checkin')">Saisir le check-in</button></div>
@@ -578,6 +583,25 @@ nav.tabs svg { width:22px; height:22px; }
   <input type="hidden" id="rpe-selector-id">
 </div>
 
+<!-- ============ SHEET : ANALYSE ============ -->
+<div class="sheet" id="sheet-analyze" role="dialog" aria-label="Analyse de la période">
+  <div class="grab"></div>
+  <h2>Analyser ma période</h2>
+  <div id="analyze-selector" style="margin-bottom:14px">
+    <label style="font-size:12px;font-weight:600;color:var(--ink2);display:block;margin-bottom:8px">Durée</label>
+    <div class="chips" style="display:flex;gap:8px">
+      <button class="chip on" data-days="7" onclick="setAnalyzeDays(7)">7 jours</button>
+      <button class="chip" data-days="28" onclick="setAnalyzeDays(28)">28 jours</button>
+      <button class="chip" data-days="90" onclick="setAnalyzeDays(90)">90 jours</button>
+    </div>
+    <input type="hidden" id="analyze-days" value="7">
+  </div>
+  <button class="btn" id="analyze-btn" onclick="doAnalyze()">Lancer l'analyse</button>
+  <div id="analyze-loading" class="thinking" style="display:none;margin-top:12px"><div class="spin"></div><div class="small">Claude analyse ta période…</div></div>
+  <div id="analyze-error" style="display:none;margin-top:12px;padding:10px;background:var(--page);border-left:3px solid var(--critical);color:var(--critical);font-size:12px"></div>
+  <div id="analyze-result" style="display:none;margin-top:12px"></div>
+</div>
+
 <!-- ============ SHEET : PLAN ============ -->
 <div class="sheet" id="sheet-plan" role="dialog" aria-label="Plan de la semaine">
   <div class="grab"></div>
@@ -611,7 +635,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.6.4";
+const APP_VERSION = "1.6.5";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -658,6 +682,7 @@ const MOIS = ["janvier","février","mars","avril","mai","juin","juillet","août"
 function fmtDate(iso){ const d = new Date(iso+"T12:00:00"); return JOURS[d.getDay()].replace(".","")+" "+d.getDate()+" "+MOIS[d.getMonth()]; }
 function r0(x){ return Math.round(Number(x)||0); }
 function r1(x){ return Math.round((Number(x)||0)*10)/10; }
+function r2(x){ return Math.round((Number(x)||0)*100)/100; }
 function esc(s){ return String(s??"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function toast(msg, isError){
   const t = $("toast");
@@ -875,6 +900,161 @@ function getRPEMessage(w){
   return "Ressenti cohérent avec l'effort mesuré.";
 }
 
+/* ================= Analyse croisée (§6) ================= */
+function buildInsightContext(startDate, endDate){
+  const dates = [];
+  let d = new Date(startDate+"T12:00:00");
+  const end = new Date(endDate+"T12:00:00");
+  while (d <= end){ dates.push(todayStr(d)); d.setDate(d.getDate()+1); }
+
+  const weeks = Math.ceil(dates.length / 7);
+  let totalVolume = 0, totalRE = 0, totalDenivele = 0, totalKcal = 0;
+  const weekVolumes = Array(weeks).fill(0);
+  const weekRE = Array(weeks).fill(0);
+
+  Object.values(db.workouts).filter(w=>dates.includes(w.date)).forEach(w=>{
+    const dayIdx = dates.indexOf(w.date);
+    const weekIdx = Math.floor(dayIdx / 7);
+    weekVolumes[weekIdx] += w.duree_min || 0;
+    weekRE[weekIdx] += w.relative_effort || 0;
+    totalVolume += w.duree_min || 0;
+    totalRE += w.relative_effort || 0;
+    totalDenivele += w.denivele_m || 0;
+    totalKcal += w.kcal || 0;
+  });
+
+  const acuteRE = weekRE[weeks-1] || 0;
+  const chronicRE = weekRE.length > 0 ? weekRE.reduce((a,b)=>a+b, 0) / weeks : 0;
+
+  let nutritionKcal = 0, nutritionProt = 0, nutritionGluc = 0, nutritionLip = 0;
+  let joursRepas = new Set(), joursCheckin = new Set();
+  dates.forEach(d=>{
+    const tot = totalsOf(d, {horsIntra:true});
+    if (tot.kcal > 0){ nutritionKcal += tot.kcal; nutritionProt += tot.prot; nutritionGluc += tot.gluc; nutritionLip += tot.lip; joursRepas.add(d); }
+    if (dayInfo(d).forme || dayInfo(d).sommeil_h || dayInfo(d).douleurs) joursCheckin.add(d);
+  });
+
+  const nutritionDays = joursRepas.size;
+  const avgKcal = nutritionDays > 0 ? r1(nutritionKcal / nutritionDays) : 0;
+  const avgProt = nutritionDays > 0 ? r1(nutritionProt / nutritionDays) : 0;
+  const avgGluc = nutritionDays > 0 ? r1(nutritionGluc / nutritionDays) : 0;
+  const avgLip = nutritionDays > 0 ? r1(nutritionLip / nutritionDays) : 0;
+
+  const goals = computeGoals();
+  const balanceEnergy = totalKcal - totalKcal; // simplifié: sera calculé différemment
+
+  let formeMoyenne = 0, sommeFormeDays = 0, douleurDays = new Set();
+  let sleepTotal = 0, sleepDays = 0, poids_pts = [];
+  dates.forEach(d=>{
+    const di = dayInfo(d);
+    if (di.forme){ formeMoyenne += di.forme; sommeFormeDays++; }
+    if (di.sommeil_h){ sleepTotal += di.sommeil_h; sleepDays++; }
+    if (di.douleurs && di.douleurs.length > 0) douleurDays.add(d);
+    if (di.poids) poids_pts.push({d, p:di.poids});
+  });
+  formeMoyenne = sommeFormeDays > 0 ? r1(formeMoyenne / sommeFormeDays) : null;
+  const sleepAvg = sleepDays > 0 ? r1(sleepTotal / sleepDays) : null;
+
+  let poidsTrend = null;
+  if (poids_pts.length >= 2){
+    const x = poids_pts.map((_,i)=>i), y = poids_pts.map(p=>p.p);
+    const meanX = x.reduce((a,b)=>a+b)/x.length, meanY = y.reduce((a,b)=>a+b)/y.length;
+    const cov = x.reduce((s,xi,i)=>s+(xi-meanX)*(y[i]-meanY), 0) / x.length;
+    const varX = x.reduce((s,xi)=>s+(xi-meanX)**2, 0) / x.length;
+    poidsTrend = varX > 0 ? r2(cov / varX * 7) : 0; // kg/semaine
+  }
+
+  const seancesAvecRPE = Object.values(db.workouts).filter(w=>dates.includes(w.date) && w.rpe).length;
+  const seancesAvecFC = Object.values(db.workouts).filter(w=>dates.includes(w.date) && w.fc_moy).length;
+
+  return {
+    dates: dates.length,
+    volume_min: totalVolume,
+    denivele_m: totalDenivele,
+    seances: Object.values(db.workouts).filter(w=>dates.includes(w.date)).length,
+    chargeAigue: acuteRE,
+    chargeChronique: r1(chronicRE),
+    ratioAiguChronique: chronicRE > 0 ? r1(acuteRE / chronicRE) : 0,
+    nutrition: { kcal: r0(totalKcal), prot_g: r0(nutritionProt), gluc_g: r0(nutritionGluc), lip_g: r0(nutritionLip),
+      avg_kcal: avgKcal, avg_prot: avgProt, avg_gluc: avgGluc, avg_lip: avgLip,
+      joursRenseignes: nutritionDays, regularite: r0(100*nutritionDays/dates.length) },
+    ressenti: { forme: formeMoyenne, sommeil_h: sleepAvg, douleurDays: douleurDays.size, poidsTrend },
+    qualite: { joursRenseignes: dates.length, joursAvecRepas: joursRepas.size, joursAvecCheckin: joursCheckin.size,
+      seancesAvecRPE, seancesAvecFC }
+  };
+}
+function hasRedFlags(startDate, endDate){
+  const dates = []; let d = new Date(startDate+"T12:00:00"); const end = new Date(endDate+"T12:00:00");
+  while (d <= end){ dates.push(todayStr(d)); d.setDate(d.getDate()+1); }
+
+  for (const date of dates){
+    const di = dayInfo(date);
+    if (di.douleurs){
+      for (const doul of di.douleurs){
+        if (doul.intensite >= 7) return {flag:true, msg:"Douleur ≥7/10 signalée"};
+        if ((doul.contexte === "repos" || doul.contexte === "après") && dates.filter(d=>{ const di2 = dayInfo(d); return di2.douleurs && di2.douleurs.some(doul2=>doul2.zone === doul.zone && (doul2.contexte === "repos" || doul2.contexte === "après")); }).length >= 3) return {flag:true, msg:"Douleur au repos/après ≥3j"};
+      }
+    }
+  }
+
+  const last7 = dates.slice(-7);
+  const zones = new Map();
+  for (const date of last7){
+    const di = dayInfo(date); if (di.douleurs) for (const doul of di.douleurs){
+      if (!zones.has(doul.zone)) zones.set(doul.zone, 0); zones.set(doul.zone, zones.get(doul.zone) + 1);
+    }
+  }
+  for (const [zone, count] of zones) if (count >= 5) return {flag:true, msg:"Zone douloureuse ≥5j sur les 7 derniers jours"};
+
+  if (dates.length >= 14){
+    const dates14 = dates.slice(-14);
+    const zonesTrend = new Map();
+    for (const zone of new Set(dates14.flatMap(d=>(dayInfo(d).douleurs||[]).map(doul=>doul.zone)))){
+      const pts = dates14.map((d,i)=>({i, d})).filter(({d})=>(dayInfo(d).douleurs||[]).some(doul=>doul.zone === zone)).map(({i,d})=>({i, val: Math.max(...(dayInfo(d).douleurs||[]).filter(doul=>doul.zone === zone).map(doul=>doul.intensite))}));
+      if (pts.length >= 2){
+        const meanI = pts.reduce((s,p)=>s+p.i, 0)/pts.length, meanVal = pts.reduce((s,p)=>s+p.val, 0)/pts.length;
+        const slope = pts.reduce((s,p)=>s+(p.i-meanI)*(p.val-meanVal), 0) / pts.reduce((s,p)=>s+(p.i-meanI)**2, 0);
+        if (slope > 0.2) return {flag:true, msg:"Intensité de douleur en hausse sur 14j"};
+      }
+    }
+  }
+  return {flag:false};
+}
+let analysisCache = {};
+async function analyzeNow(startDate, endDate){
+  const cacheKey = `${startDate}_${endDate}`;
+  if (analysisCache[cacheKey]) return analysisCache[cacheKey];
+
+  const ctx = buildInsightContext(startDate, endDate);
+  const redFlags = hasRedFlags(startDate, endDate);
+
+  if (redFlags.flag){
+    analysisCache[cacheKey] = {redFlags: true, message: "Cette douleur dure ou s'intensifie. L'app peut t'aider à suivre, pas à décider : parles-en à ton médecin du sport ou à ton kiné avant d'adapter quoi que ce soit."};
+    return analysisCache[cacheKey];
+  }
+
+  const constraints = (db.settings.sport?.contraintes || "").slice(0, 500);
+  const objectives = (db.settings.sport?.objectifs || []).slice(0, 3).map(o=>`${o.titre} (${o.type}, cible: ${o.date_cible || "—"})`).join("; ");
+
+  const messages = [{role:"user", content:`Analyse cette période d'entraînement de Ben. Contexte: ${constraints} Objectifs: ${objectives}
+
+Données:
+- Charge: ${ctx.seances} séances, ${ctx.volume_min} min, ${ctx.denivele_m}m D+, RE aigu ${r0(ctx.chargeAigue)} (chronique ${ctx.chargeChronique}, ratio ${ctx.ratioAiguChronique})
+- Nutrition (hors intra-effort): ${ctx.nutrition.avg_kcal} kcal/j moy (${ctx.nutrition.joursRenseignes}j renseignés, ${ctx.nutrition.regularite}% régularité), P ${ctx.nutrition.avg_prot}g G ${ctx.nutrition.avg_gluc}g L ${ctx.nutrition.avg_lip}g
+- Ressenti: forme ${ctx.ressenti.forme||"—"}, sommeil ${ctx.ressenti.sommeil_h||"—"}h, ${ctx.ressenti.douleurDays}j avec douleurs
+- Poids: tendance ${ctx.ressenti.poidsTrend ? (ctx.ressenti.poidsTrend>0?"+":"") + ctx.ressenti.poidsTrend + " kg/sem" : "—"}
+- Qualité: ${ctx.qualite.joursAvecRepas}/${ctx.qualite.joursRenseignes} j avec repas, ${ctx.qualite.seancesAvecRPE}/${ctx.qualite.seancesAvecFC} séances avec RPE/FC`}];
+
+  try {
+    const resp = await callClaude(messages, SYS_PROMPT_COACH);
+    const analysis = parseAI(resp);
+    analysisCache[cacheKey] = analysis;
+    return analysis;
+  } catch(err){
+    throw err;
+  }
+}
+
 /* ================= Plan de la semaine ================= */
 function getCurrentWeekISO(){
   const d = new Date(todayStr()+"T12:00:00");
@@ -969,6 +1149,72 @@ function renderPlanFrise(days){
       ${m.description?`<div style="font-size:11px;color:var(--ink2);margin-top:4px">${m.description}</div>`:""}
     </div>
   </div>`).join("");
+}
+
+function setAnalyzeDays(days){
+  $("analyze-days").value = days;
+  document.querySelectorAll("#analyze-selector .chip").forEach(c=>c.classList.toggle("on", parseInt(c.dataset.days)===days));
+}
+async function doAnalyze(){
+  const days = parseInt($("analyze-days").value);
+  const endDate = todayStr();
+  const startDate = addDays(endDate, 1-days);
+
+  $("analyze-loading").style.display = "block";
+  $("analyze-error").style.display = "none";
+  $("analyze-result").innerHTML = "";
+  $("analyze-btn").disabled = true;
+
+  try {
+    const analysis = await analyzeNow(startDate, endDate);
+    $("analyze-loading").style.display = "none";
+
+    if (analysis.redFlags){
+      $("analyze-result").innerHTML = `<div style="padding:12px;background:var(--page);border-left:3px solid var(--critical);color:var(--ink)"><div style="font-weight:600;color:var(--critical);margin-bottom:6px">⚠️ Garde-fou activé</div><div style="font-size:12px">${analysis.message}</div></div>`;
+      return;
+    }
+
+    let html = `<div style="margin-bottom:12px"><div style="font-weight:600;font-size:13px;margin-bottom:8px">📋 Résumé</div><div style="font-size:12px;color:var(--ink2);line-height:1.5">${analysis.resume||"—"}</div></div>`;
+
+    if (analysis.observations && analysis.observations.length > 0){
+      html += `<div style="margin-bottom:12px"><div style="font-weight:600;font-size:13px;margin-bottom:8px">🔍 Observations</div>${analysis.observations.map(o=>`
+        <div style="font-size:11px;margin-bottom:8px;padding:8px;background:var(--page);border-radius:6px">
+          <div style="font-weight:600;color:var(--ink)">${o.constat}</div>
+          <div style="color:var(--muted);margin-top:2px;font-size:10px">Données: ${o.donnees}</div>
+          <div style="color:var(--accent);margin-top:2px;font-size:10px">Confiance: ${o.confiance}</div>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    if (analysis.hypotheses && analysis.hypotheses.length > 0){
+      html += `<div style="margin-bottom:12px"><div style="font-weight:600;font-size:13px;margin-bottom:8px">💡 Hypothèses & tests</div>${analysis.hypotheses.map(h=>`
+        <div style="font-size:11px;margin-bottom:8px;padding:8px;background:var(--page);border-radius:6px">
+          <div style="font-weight:600;color:var(--ink)">${h.piste}</div>
+          <div style="color:var(--muted);margin-top:4px">À observer/essayer: ${h.test}</div>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    if (analysis.actions && analysis.actions.length > 0){
+      html += `<div style="margin-bottom:12px"><div style="font-weight:600;font-size:13px;margin-bottom:8px">✅ Actions suggérées</div>${analysis.actions.map(a=>`
+        <div style="font-size:11px;margin-bottom:8px;padding:8px;background:var(--page);border-radius:6px">
+          <div style="font-weight:600;color:var(--ink)">${a.quoi}</div>
+          <div style="color:var(--muted);margin-top:2px">Pourquoi: ${a.pourquoi}</div>
+        </div>
+      `).join("")}</div>`;
+    }
+
+    if (analysis.vigilance && analysis.vigilance.length > 0){
+      html += `<div><div style="font-weight:600;font-size:13px;margin-bottom:8px">🚨 À surveiller</div><ul style="margin:0;padding-left:16px;font-size:11px">${analysis.vigilance.map(v=>`<li>${v}</li>`).join("")}</ul></div>`;
+    }
+
+    $("analyze-result").innerHTML = html;
+  } catch(err){
+    $("analyze-error").textContent = err.message;
+    $("analyze-error").style.display = "block";
+    $("analyze-loading").style.display = "none";
+  }
+  $("analyze-btn").disabled = false;
 }
 
 function renderPainFrise(days){
@@ -1380,6 +1626,23 @@ function deleteMeal(){
 function refresh(){ if (state.page==="day") renderDay(); else if (state.page==="trends") renderTrends(); else renderHome(); }
 
 /* ================= Claude API ================= */
+const SYS_PROMPT_COACH = `Tu es un coach sportif rigoureux qui accompagne Ben dans sa progression. Voici les règles NON NÉGOCIABLES :
+
+1. **Jamais de causalité** : écris « on observe que… », « une piste possible… ». Une corrélation sur quelques semaines ne démontre rien. Jamais « X a causé Y ».
+
+2. **Toujours situer la fiabilité** : cite le nombre de jours renseignés ; si < 14 jours exploitables, dis explicitement que c'est trop tôt et dégaine que des constats bruts.
+
+3. **Proposer un test** : chaque hypothèse doit inclure une façon simple de la vérifier sur 2 semaines. C'est ce qui rend utile.
+
+4. **Pas de diagnostic médical** : ni nom de pathologie, ni posologie. Reste dans l'entraînement.
+
+5. **Ne jamais contredire le protocole médical** : s'il y a tension, le protocole gagne et tu invites à en parler à son kiné/médecin.
+
+6. **Ton direct et concret** : français, tutoiement, pas de flatterie.
+
+Réponds en JSON strict au format exact :
+{"resume":"2-3 phrases sur l'état général","observations":[{"constat":"...","donnees":"les chiffres qui l'appuient","confiance":"faible|moyenne|bonne"}],"hypotheses":[{"piste":"...","test":"ce qu'il pourrait observer/essayer 2 semaines"}],"actions":[{"quoi":"...","pourquoi":"..."}],"vigilance":["signaux à surveiller"]}`;
+
 const SYS_PROMPT_PLAN = `Tu es un coach en entraînement sportif. On te donne une capture d'écran d'un plan d'entraînement (par ex. Campus Coach).
 Extrais les séances de la semaine en cours. Pour chaque séance, identifie : date (YYYY-MM-DD), type d'entraînement, description courte, durée en minutes, intensité.
 Réponds UNIQUEMENT avec un objet JSON valide, sans texte autour, au format exact :
