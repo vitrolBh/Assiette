@@ -311,6 +311,11 @@ nav.tabs svg { width:22px; height:22px; }
     <div id="training-pain" style="overflow-x:auto"></div>
     <div style="margin-top:10px"><button class="btn sec" onclick="openSheet('sheet-checkin')">Saisir le check-in</button></div>
   </div>
+  <div class="card">
+    <h2>Objectifs et phase</h2>
+    <div id="training-objectives"></div>
+    <div style="margin-top:10px"><button class="btn sec" onclick="showPage('settings')">Gérer les objectifs</button></div>
+  </div>
 </main>
 
 <!-- ============ PAGE : TENDANCES ============ -->
@@ -376,6 +381,30 @@ nav.tabs svg { width:22px; height:22px; }
     </div>
     <div class="notice num" id="goal-preview" style="margin-top:6px"></div>
     <button class="btn" style="margin-top:12px" onclick="saveGoals()">Enregistrer les objectifs</button>
+  </div>
+
+  <div class="card">
+    <h2>Sport & entraînement</h2>
+    <div class="field">
+      <label>Phase actuelle</label>
+      <select id="s-phase">
+        <option value="reprise">Reprise</option>
+        <option value="construction">Construction</option>
+        <option value="specifique">Spécifique</option>
+        <option value="affutage">Affûtage</option>
+        <option value="coupure">Coupure</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Contraintes (texte libre)</label>
+      <textarea id="s-contraintes" rows="2" placeholder="Ex: protocole médical lombaires depuis 31/08/2026"></textarea>
+    </div>
+    <div class="field">
+      <label>Objectifs sportifs</label>
+      <div id="s-objectifs-list" style="margin-bottom:10px"></div>
+      <button class="btn sec" style="width:100%" onclick="addSportObjective()">+ Ajouter un objectif</button>
+    </div>
+    <button class="btn" style="margin-top:12px" onclick="saveSportSettings()">Enregistrer</button>
   </div>
 
   <div class="card">
@@ -635,7 +664,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.6.5";
+const APP_VERSION = "1.6.6";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -643,6 +672,7 @@ let db = loadDB();
 db.favorites = db.favorites || [];
 db.settings.withings = db.settings.withings || null;
 db.settings.strava = db.settings.strava || null;
+db.settings.sport = db.settings.sport || { phase:"reprise", contraintes:"", objectifs:[] };
 db.workouts = db.workouts || {};
 db.plan = db.plan || {};
 
@@ -665,7 +695,8 @@ function loadDB(){
   } catch(e) { console.warn("localStorage indisponible", e); }
   return { settings:{ apiKey:"", model:"claude-sonnet-4-5", withings:null, strava:null,
       goals:{ mode:"default", manual:{...DEFAULTS},
-        profile:{ sexe:"H", age:35, taille:178, poids:78, act:1.375, obj:0 } } },
+        profile:{ sexe:"H", age:35, taille:178, poids:78, act:1.375, obj:0 } },
+      sport:{ phase:"reprise", contraintes:"", objectifs:[] } },
     meals:[], days:{}, favorites:[], workouts:{}, plan:{} };
 }
 function save(){ try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch(e){ toast("⚠️ Stockage plein — pense à exporter puis purger.", true); } }
@@ -1332,6 +1363,21 @@ function renderTraining(){
   }).join("");
   if ($("training-plan")){ $("training-plan").innerHTML = renderPlanFrise(30); }
   if ($("training-pain")){ $("training-pain").innerHTML = renderPainFrise(30); }
+  if ($("training-objectives")){
+    const phase = db.settings.sport?.phase || "—";
+    const objs = db.settings.sport?.objectifs || [];
+    let html = `<div style="margin-bottom:10px"><span style="font-weight:600;font-size:13px">Phase actuelle</span><div style="font-size:12px;color:var(--ink2);margin-top:4px">${phase}</div></div>`;
+    if (objs.length > 0){
+      html += `<div><span style="font-weight:600;font-size:13px">Objectifs</span>`;
+      objs.forEach(obj=>{
+        html += `<div style="font-size:11px;color:var(--muted);margin-top:6px">${obj.titre} (${obj.type}) · ${obj.date_cible||"—"}</div>`;
+      });
+      html += `</div>`;
+    } else {
+      html += `<div style="font-size:12px;color:var(--muted)">Aucun objectif défini</div>`;
+    }
+    $("training-objectives").innerHTML = html;
+  }
 }
 function openRPESelector(date, id){
   const w = db.workouts[String(id)];
@@ -2199,6 +2245,82 @@ function renderStravaRow(){
     </div>`;
 }
 /* ================= Réglages ================= */
+/* ================= Réglages Sport ================= */
+let state_sport_edit = null;
+function renderSportObjectives(){
+  const objs = db.settings.sport.objectifs || [];
+  $("s-objectifs-list").innerHTML = objs.map((obj, idx)=>`
+    <div style="display:flex;gap:8px;padding:8px;background:var(--page);border-radius:8px;margin-bottom:6px;align-items:flex-start">
+      <div style="flex:1;font-size:12px">
+        <div style="font-weight:600">${obj.titre}</div>
+        <div style="color:var(--muted);font-size:11px">${obj.type} · ${obj.date_cible||"—"}</div>
+        ${obj.distance_km?`<div style="color:var(--muted);font-size:11px">${obj.distance_km} km · ${obj.denivele_m||0}m</div>`:""}
+      </div>
+      <div style="display:flex;gap:4px;flex-direction:column">
+        <button class="btn ghost" style="width:auto;padding:4px 6px;font-size:11px" onclick="editSportObjective(${idx})">✏️</button>
+        <button class="btn ghost" style="width:auto;padding:4px 6px;font-size:11px;color:var(--critical)" onclick="deleteSportObjective(${idx})">✕</button>
+      </div>
+    </div>
+  `).join("");
+}
+function addSportObjective(){
+  state_sport_edit = { idx:null, titre:"", type:"trail", date_cible:"", distance_km:"", denivele_m:"", notes:"" };
+  editSportObjective(null);
+}
+function editSportObjective(idx){
+  const obj = idx !== null ? db.settings.sport.objectifs[idx] : { titre:"", type:"trail", date_cible:"", distance_km:"", denivele_m:"", notes:"" };
+  state_sport_edit = {...obj, idx};
+  const html = `
+  <div style="display:flex;flex-direction:column;gap:10px;padding:12px;background:var(--page);border-radius:8px">
+    <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Titre</label><input type="text" id="obj-titre" value="${obj.titre||""}" placeholder="Ex: Trail du Mont-Blanc"></div>
+    <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Type</label><select id="obj-type">
+      <option value="trail" ${obj.type==="trail"?"selected":""}>Trail</option>
+      <option value="route" ${obj.type==="route"?"selected":""}>Route</option>
+      <option value="forme" ${obj.type==="forme"?"selected":""}>Forme</option>
+      <option value="reprise" ${obj.type==="reprise"?"selected":""}>Reprise</option>
+    </select></div>
+    <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Date cible (YYYY-MM-DD)</label><input type="text" id="obj-date" value="${obj.date_cible||""}" placeholder="2026-10-15"></div>
+    <div class="grid2"><div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Distance (km)</label><input type="number" id="obj-dist" value="${obj.distance_km||""}" placeholder="50" step="0.1"></div>
+      <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">D+ (m)</label><input type="number" id="obj-elev" value="${obj.denivele_m||""}" placeholder="2500"></div></div>
+    <div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:4px">Notes</label><textarea id="obj-notes" rows="2" placeholder="Remarques supplémentaires">${obj.notes||""}</textarea></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn" onclick="saveSportObjective()">Valider</button>
+      <button class="btn sec" onclick="renderSportObjectives()">Annuler</button>
+    </div>
+  </div>
+  `;
+  $("s-objectifs-list").innerHTML = html;
+}
+function saveSportObjective(){
+  const obj = {
+    id: state_sport_edit.id || Math.random().toString(36).slice(2),
+    titre: $("obj-titre").value || "Objectif",
+    type: $("obj-type").value,
+    date_cible: $("obj-date").value || null,
+    distance_km: +$("obj-dist").value || null,
+    denivele_m: +$("obj-elev").value || null,
+    notes: $("obj-notes").value || ""
+  };
+  if (state_sport_edit.idx !== null){ db.settings.sport.objectifs[state_sport_edit.idx] = obj; }
+  else { db.settings.sport.objectifs.push(obj); }
+  save();
+  renderSportObjectives();
+  toast("Objectif enregistré ✓");
+}
+function deleteSportObjective(idx){
+  db.settings.sport.objectifs.splice(idx, 1);
+  save();
+  renderSportObjectives();
+  toast("Objectif supprimé");
+}
+function saveSportSettings(){
+  db.settings.sport.phase = $("s-phase").value;
+  db.settings.sport.contraintes = $("s-contraintes").value;
+  save();
+  toast("Paramètres sport enregistrés ✓");
+  renderSettings();
+}
+
 function renderSettings(){
   const g = db.settings.goals;
   document.querySelectorAll("#goal-mode-chips .chip").forEach(c=>c.classList.toggle("on", c.dataset.mode===g.mode));
@@ -2216,6 +2338,10 @@ function renderSettings(){
   updateGoalPreview();
   renderWithingsRow();
   renderStravaRow();
+  const s = db.settings.sport;
+  $("s-phase").value = s.phase || "reprise";
+  $("s-contraintes").value = s.contraintes || "";
+  renderSportObjectives();
 }
 document.querySelectorAll("#goal-mode-chips .chip").forEach(c=>{
   c.addEventListener("click", ()=>{ db.settings.goals.mode = c.dataset.mode; renderSettings(); });
