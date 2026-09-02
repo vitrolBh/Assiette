@@ -664,7 +664,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.6.6";
+const APP_VERSION = "1.6.7";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -1426,54 +1426,34 @@ let state_checkin_douleurs = [];
 function setForme(v){ $("ci-forme").value = v; document.querySelectorAll("#ci-forme-chips .chip").forEach(c=>c.classList.toggle("on", parseInt(c.dataset.forme)===v)); }
 function renderDouleursList(){
   $("ci-douleurs-list").innerHTML = state_checkin_douleurs.map((d,idx)=>`
-    <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;padding:8px;background:var(--page);border-radius:8px">
-      <div style="flex:1">
-        <div style="font-size:12px;font-weight:600;color:var(--ink2)">${DOULEUR_LABELS[d.zone] || d.zone}</div>
-        <div style="font-size:12px;color:var(--muted)">Intensité ${d.intensite}/10 · ${DOULEUR_CONTEXTES.includes(d.contexte)?d.contexte:"—"}</div>
+    <div class="card" style="margin-bottom:8px">
+      <div class="field">
+        <label>Zone</label>
+        <select onchange="state_checkin_douleurs[${idx}].zone=this.value">
+          ${DOULEUR_ZONES.map(z=>`<option value="${z}" ${z===d.zone?"selected":""}>${DOULEUR_LABELS[z]}</option>`).join("")}
+        </select>
       </div>
-      <button class="btn ghost" style="color:var(--critical);width:auto;padding:4px 6px;font-size:12px" onclick="removeDouleur(${idx})">✕</button>
+      <div class="field">
+        <label>Intensité: <span class="num" id="douleur-val-${idx}">${d.intensite}</span>/10</label>
+        <input type="range" min="0" max="10" value="${d.intensite}" style="width:100%" oninput="state_checkin_douleurs[${idx}].intensite=parseInt(this.value);$('douleur-val-${idx}').textContent=this.value">
+      </div>
+      <div class="field">
+        <label style="display:block;margin-bottom:8px">Contexte</label>
+        <div class="chips" style="display:flex;gap:6px">
+          ${DOULEUR_CONTEXTES.map(c=>`<button class="chip ${c===d.contexte?"on":""}" onclick="state_checkin_douleurs[${idx}].contexte='${c}';[...this.parentElement.children].forEach(b=>b.classList.toggle('on',b.textContent==='${c}'));">${c}</button>`).join("")}
+        </div>
+      </div>
+      <button class="btn ghost" style="color:var(--critical);width:100%;margin-top:8px" onclick="removeDouleur(${idx})">Supprimer cette douleur</button>
     </div>
   `).join("");
 }
 function addDouleur(){
   state_checkin_douleurs.push({zone:"lombaires",intensite:5,contexte:"effort"});
-  openEditDouleur(state_checkin_douleurs.length-1);
+  renderDouleursList();
 }
 function removeDouleur(idx){
   state_checkin_douleurs.splice(idx,1);
   renderDouleursList();
-}
-function openEditDouleur(idx){
-  const d = state_checkin_douleurs[idx];
-  const html = `
-  <div style="display:flex;flex-direction:column;gap:12px">
-    <div>
-      <label style="display:block;font-size:12px;font-weight:600;color:var(--ink2);margin-bottom:6px">Zone</label>
-      <select id="douleur-zone" style="width:100%">${DOULEUR_ZONES.map(z=>`<option value="${z}" ${z===d.zone?"selected":""}>${DOULEUR_LABELS[z]}</option>`).join("")}</select>
-    </div>
-    <div>
-      <label style="display:block;font-size:12px;font-weight:600;color:var(--ink2);margin-bottom:6px">Intensité : <span id="douleur-val">${d.intensite}</span>/10</label>
-      <input type="range" id="douleur-intensite" min="0" max="10" value="${d.intensite}" style="width:100%" oninput="$('douleur-val').textContent = this.value">
-    </div>
-    <div>
-      <label style="display:block;font-size:12px;font-weight:600;color:var(--ink2);margin-bottom:6px">Contexte</label>
-      <div class="chips" style="display:flex;gap:6px">${DOULEUR_CONTEXTES.map(c=>`<button class="chip ${c===d.contexte?"on":""}" onclick="$('douleur-contexte').value='${c}';[...this.parentElement.children].forEach(b=>b.classList.toggle('on',b.textContent.toLowerCase()==='${c}'))">${c}</button>`).join("")}</div>
-      <input type="hidden" id="douleur-contexte" value="${d.contexte}">
-    </div>
-  </div>
-  `;
-  const el = $("toast");
-  el.innerHTML = html + `<div style="display:flex;gap:8px;margin-top:12px"><button class="btn" onclick="saveDouleur(${idx},this.closest('.toast'))">Valider</button><button class="btn sec" onclick="closeToast()">Annuler</button></div>`;
-  el.classList.add("show");
-}
-function saveDouleur(idx, el){
-  state_checkin_douleurs[idx] = {
-    zone: $("douleur-zone").value,
-    intensite: parseInt($("douleur-intensite").value),
-    contexte: $("douleur-contexte").value
-  };
-  renderDouleursList();
-  closeToast();
 }
 function fillCheckin(){
   const d = state.page==="day" ? state.selectedDay : todayStr();

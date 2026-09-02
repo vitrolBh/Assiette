@@ -56,6 +56,7 @@ https://vitrolbh.github.io/Assiette/
 - Graphiques : SVG maison (pas de lib). Grilles fines, barres à bouts arrondis 4px,
   légende dès 2 séries, libellés d'axe en gris `--muted`, `tabular-nums` pour les chiffres.
 - Toute l'UI en français, ton simple et direct.
+- **#toast** (notifications brèves) : sert UNIQUEMENT aux messages courts (kcal ajoutée, enregistrement OK, erreur). Jamais de contenu interactif (formulaires, sélecteurs). Utiliser les **sheets** pour l'édition inline ou les fenêtres modales.
 
 ## Dev & déploiement
 
