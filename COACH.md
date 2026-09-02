@@ -71,6 +71,109 @@ une sortie longue n'est pas une erreur alimentaire, c'est du carburant.
 
 ---
 
+## 3bis. Profil d'habitudes alimentaires
+
+Le coach doit connaître **comment Ben mange réellement**, pas un modèle théorique.
+Répartition du travail : l'app calcule ce qui est chiffrable (heures, macros,
+régularité), le modèle repère ce qui est sémantique (les aliments récurrents,
+les schémas). Ne pas tenter de normaliser les noms de plats en JS — c'est fragile
+et le modèle le fait mieux à partir des noms bruts.
+
+`buildHabitsProfile()` sur les **60 derniers jours** :
+
+```js
+{
+  parType: {                         // petit-déjeuner, déjeuner, dîner, collation
+    "<type>": { heureMediane:"08:40", occurrences: 42, joursCouverts: 0.86,
+                kcalMedian: 420, splitMedian: { prot:0.22, gluc:0.48, lip:0.30 } }
+  },
+  semaine:   { kcalMoy, splitMoy, repasParJour },   // lundi→vendredi
+  weekend:   { kcalMoy, splitMoy, repasParJour },   // samedi→dimanche
+  regularite: { joursAvecAuMoins2Repas: 0.78, joursRenseignes: 47 },
+  platsRecents: [ { nom, date, type, kcal, prot, gluc, lip } ]  // 30 derniers jours, noms BRUTS
+}
+```
+
+Note : `heureMediane` par type sert au § 4bis. `platsRecents` est la matière
+première de l'analyse sémantique — envoyer les noms tels que saisis.
+
+---
+
+## 4bis. Suggestion adaptée au moment
+
+Le type de repas suggéré ne doit **pas** venir de seuils horaires figés mais des
+habitudes réelles : si Ben déjeune habituellement à 13 h 15 et qu'il est 14 h,
+c'est encore le déjeuner ; s'il grignote d'ordinaire vers 16 h 30, à 16 h c'est
+une collation.
+
+Règle : pour chaque type, une fenêtre = `heureMediane ± 90 min`. Le type retenu est
+celui dont la fenêtre contient l'heure courante ; si plusieurs correspondent,
+celui qui n'a pas encore été enregistré aujourd'hui ; si aucun, « collation ».
+Moins de 5 occurrences pour un type → retomber sur les seuils par défaut.
+
+Le contexte du § 3 est complété par : `moment.typeSuggere`, `moment.estWeekend`,
+`habitudes` (le profil ci-dessus). Le prompt du § 4 gagne trois règles :
+
+- **Ancrer dans ses habitudes** : proposer d'abord des choses proches de ce qu'il
+  mange déjà (ses classiques reviennent dans `platsRecents`), avec une variante
+  qui corrige ce qui manque. Une suggestion crédible est une suggestion suivie.
+- **Adapter au type et au jour** : un petit-déjeuner reste un petit-déjeuner ;
+  le week-end autorise plus de temps de préparation que le mardi midi.
+- **Ne jamais suggérer un repas déjà pris** aujourd'hui, sauf s'il reste beaucoup
+  de marge et que l'heure s'y prête.
+
+---
+
+## 5bis. Revue de la semaine (analyse des aliments)
+
+C'est la fonction « oh, tu as pris un pain suisse quatre fois cette semaine ».
+Déclenchée à la demande (bouton dans la carte Coach : **« Ma semaine »**) et
+proposée automatiquement dans le bilan du dimanche soir.
+
+Entrée : `platsRecents` (7 jours), les moyennes de la semaine, les objectifs,
+le régime, et le contexte sportif. Sortie JSON :
+
+```json
+{"resume":"1-2 phrases sur la semaine",
+ "aliments_marquants":[{"aliment":"...","occurrences":0,
+   "composition":"ce qu'il apporte, en macros","effet":"ce que ça change pour ses objectifs",
+   "alternative":"option concrète à composition proche mais mieux alignée"}],
+ "habitudes":[{"constat":"...","donnees":"les chiffres qui l'appuient"}],
+ "a_essayer":"une seule chose à tester la semaine prochaine"}
+```
+
+### Règles de ton — la partie délicate
+
+L'objectif est un coach **utile et direct**, pas un juge. Concrètement :
+
+**Ce que le modèle FAIT :**
+- **Décrire la composition, factuellement** : « un pain suisse, c'est environ
+  400 kcal, essentiellement glucides et lipides, 6 g de protéines. »
+- **Nommer la fréquence** : « quatre fois cette semaine, c'est devenu ton
+  petit-déjeuner par défaut » — c'est le schéma qui compte, pas l'écart isolé.
+- **Relier aux objectifs, pas à la morale** : « tes matins pèsent lourd en
+  calories et te laissent loin de ta cible protéines, que tu finis par courir
+  après le soir. »
+- **Donner l'alternative concrète et comparable** : « pour à peu près les mêmes
+  calories, un skyr + granola + banane t'apporte ~25 g de protéines en plus. »
+
+**Ce que le modèle NE FAIT PAS :**
+- Pas de « bon » ni de « mauvais » aliment, pas de « c'est dommage », pas de
+  « tu as craqué », pas d'aliment « interdit », pas de compensation par le sport.
+- Pas de commentaire sur un aliment isolé mangé une fois : en dessous de
+  **3 occurrences sur 7 jours**, un aliment n'entre pas dans `aliments_marquants`.
+- Pas de leçon sur le plaisir alimentaire : un aliment apprécié qui revient
+  raisonnablement n'est pas un problème à résoudre.
+
+**Pourquoi cette limite** (à garder même si le ton « cash » est sélectionné) :
+un outil qui fait culpabiliser sur un petit-déjeuner finit désinstallé, et
+surtout, associer culpabilité et nourriture est contre-productif — y compris
+pour la performance. Le ton « cash » rend le propos plus direct et plus bref,
+il ne rend pas le jugement moral acceptable. Ce qui doit piquer, c'est la
+précision du constat, pas la réprobation.
+
+---
+
 ## 4. Prompt « Que manger maintenant ? »
 
 Sortie JSON strict :
@@ -193,6 +296,8 @@ reste le lieu de l'analyse longue durée. Le coach de l'accueil, lui, reste cour
 - Cache : `db.coachCache = { date, type, contexteHash, result }`. Réutiliser le
   résultat si même jour, même type, et contexte inchangé (hash des repas + séances).
   « Autres idées » force un nouvel appel.
+- La **revue de la semaine** (§ 5bis) se met en cache par semaine ISO : un appel
+  par semaine suffit, sauf demande explicite de rafraîchissement.
 - Modèle : Haiku suffit largement pour les suggestions (rapide, économique) ;
   Sonnet pour le bilan du soir et l'analyse de période. Rendre ça configurable
   plutôt que de le figer.
@@ -222,3 +327,9 @@ d'un modèle de langage : elles sont utiles pour une tendance, pas exactes au gr
 - Journée avec 0 ou 1 repas → refus argumenté de faire un bilan, pas d'invention.
 - Objectifs déjà atteints → ne pousse pas à manger davantage.
 - Cache : deux clics successifs = un seul appel API ; « Autres idées » = nouvel appel.
+- **Habitudes** : à 16 h, si Ben grignote habituellement à cette heure-là, la
+  suggestion proposée est une collation — pas un dîner.
+- **Revue de la semaine** : un aliment mangé une seule fois n'apparaît pas dans
+  `aliments_marquants` ; un aliment revenu 4 fois est relevé, avec sa composition
+  et une alternative — et sans aucun « c'est dommage » ni « tu as craqué »
+  (tester aussi avec le ton « cash » sélectionné).
