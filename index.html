@@ -238,6 +238,14 @@ nav.tabs svg { width:22px; height:22px; }
   </div>
 
   <div class="card">
+    <h2>Coach nutrition</h2>
+    <div id="coach-content" style="font-size:12px">
+      <div id="coach-context" style="color:var(--muted);margin-bottom:10px"></div>
+      <button class="btn" style="width:100%" onclick="openCoachSheet()">Que manger maintenant ?</button>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="row spread" style="margin-bottom:4px">
       <h2 style="margin-bottom:0">Repas du jour</h2>
       <span class="tiny num" id="home-mealcount"></span>
@@ -405,6 +413,41 @@ nav.tabs svg { width:22px; height:22px; }
       <button class="btn sec" style="width:100%" onclick="addSportObjective()">+ Ajouter un objectif</button>
     </div>
     <button class="btn" style="margin-top:12px" onclick="saveSportSettings()">Enregistrer</button>
+  </div>
+
+  <div class="card">
+    <h2>Coach nutrition</h2>
+    <div class="field">
+      <label>Régime</label>
+      <div class="chips" id="diet-chips" style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="chip" data-diet="omnivore" onclick="setDiet('omnivore')">Omnivore</button>
+        <button class="chip" data-diet="végétarien" onclick="setDiet('végétarien')">Végétarien</button>
+        <button class="chip" data-diet="pescétarien" onclick="setDiet('pescétarien')">Pescétarien</button>
+        <button class="chip" data-diet="vegan" onclick="setDiet('vegan')">Vegan</button>
+        <button class="chip" data-diet="flexitarien" onclick="setDiet('flexitarien')">Flexitarien</button>
+        <button class="chip" data-diet="high-protein" onclick="setDiet('high-protein')">High-protein</button>
+        <button class="chip" data-diet="keto" onclick="setDiet('keto')">Keto</button>
+        <button class="chip" data-diet="méditerranéen" onclick="setDiet('méditerranéen')">Méditerranéen</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>Allergies / aversions</label>
+      <textarea id="s-dietnotes" rows="2" placeholder="Ex: arachides, œufs, latex"></textarea>
+    </div>
+    <div class="field">
+      <label>Ton du coach</label>
+      <div class="chips" id="ton-chips" style="display:flex;gap:6px">
+        <button class="chip" data-ton="factuel" onclick="setTon('factuel')">Factuel</button>
+        <button class="chip" data-ton="encourageant" onclick="setTon('encourageant')">Encourageant</button>
+        <button class="chip" data-ton="cash" onclick="setTon('cash')">Cash</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>Compléments alimentaires (une par ligne)</label>
+      <textarea id="s-complements" rows="2" placeholder="Ex: Fer bisglycinate 14 mg&#10;Oméga-3 1000 mg"></textarea>
+    </div>
+    <button class="btn" style="margin-top:12px" onclick="saveCoachSettings()">Enregistrer</button>
+    <div class="tiny" style="margin-top:10px;color:var(--muted)">Suggestions générées par IA à partir de tes saisies. Ce n'est pas un avis médical ni diététique.</div>
   </div>
 
   <div class="card">
@@ -653,6 +696,15 @@ nav.tabs svg { width:22px; height:22px; }
   </div>
 </div>
 
+<!-- ============ SHEET : COACH ============ -->
+<div class="sheet" id="sheet-coach" role="dialog" aria-label="Coach nutrition">
+  <div class="grab"></div>
+  <h2>Que manger maintenant ?</h2>
+  <div id="coach-loading" class="thinking" style="display:none;margin-top:12px"><div class="spin"></div><div class="small">Claude propose des idées…</div></div>
+  <div id="coach-error" style="display:none;margin-top:12px;padding:10px;background:var(--page);border-left:3px solid var(--critical);color:var(--critical);font-size:12px"></div>
+  <div id="coach-result" style="display:none;margin-top:12px"></div>
+</div>
+
 <div class="toast" id="toast"><span class="txt" id="toast-txt"></span><button class="x" onclick="closeToast()" aria-label="Fermer">✕</button></div>
 <div class="tooltip" id="tooltip"></div>
 <div class="update-banner" id="update-banner">
@@ -664,7 +716,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.6.7";
+const APP_VERSION = "1.6.8";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -673,8 +725,15 @@ db.favorites = db.favorites || [];
 db.settings.withings = db.settings.withings || null;
 db.settings.strava = db.settings.strava || null;
 db.settings.sport = db.settings.sport || { phase:"reprise", contraintes:"", objectifs:[] };
+db.settings.diet = db.settings.diet || "omnivore";
+db.settings.dietNotes = db.settings.dietNotes || "";
+db.settings.coachTon = db.settings.coachTon || "factuel";
+db.settings.complements = db.settings.complements || [];
+db.settings.coachSoir = db.settings.coachSoir || false;
+db.settings.coachSoirHeure = db.settings.coachSoirHeure || 21;
 db.workouts = db.workouts || {};
 db.plan = db.plan || {};
+db.coachCache = db.coachCache || {};
 
 const WITHINGS = {
   clientId: "72446188fa3e2c381f62f6c2e617b09e71cbee19dc2fd0722e39d6e4810a8587",
@@ -696,8 +755,9 @@ function loadDB(){
   return { settings:{ apiKey:"", model:"claude-sonnet-4-5", withings:null, strava:null,
       goals:{ mode:"default", manual:{...DEFAULTS},
         profile:{ sexe:"H", age:35, taille:178, poids:78, act:1.375, obj:0 } },
-      sport:{ phase:"reprise", contraintes:"", objectifs:[] } },
-    meals:[], days:{}, favorites:[], workouts:{}, plan:{} };
+      sport:{ phase:"reprise", contraintes:"", objectifs:[] },
+      diet:"omnivore", dietNotes:"", coachTon:"factuel", complements:[], coachSoir:false, coachSoirHeure:21 },
+    meals:[], days:{}, favorites:[], workouts:{}, plan:{}, coachCache:{} };
 }
 function save(){ try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch(e){ toast("⚠️ Stockage plein — pense à exporter puis purger.", true); } }
 
@@ -790,6 +850,7 @@ function renderHome(){
   let macroHTML = MACRO_DEFS.map(m=>macroBar(m, totHorsIntra[m.key], goals[m.key])).join("");
   if (intra.gluc > 0) macroHTML += `<div class="tiny" style="color:var(--muted);margin-top:8px">dont ⚡ ${r0(intra.gluc)} g de glucides à l'effort</div>`;
   $("home-macros").innerHTML = macroHTML;
+  renderCoachWidget();
   // 7 jours
   $("home-days7").innerHTML = Array.from({length:7},(_,i)=>{
     const d = addDays(date, i-6);
@@ -929,6 +990,62 @@ function getRPEMessage(w){
   if (ecart > 25) return "Tu l'as vécue plus dure que ce que dit ton cardio. Fatigue, sommeil, chaleur ou nutrition peuvent expliquer l'écart.";
   if (ecart < -25) return "Séance plus exigeante physiologiquement que ressentie — attention à ne pas sous-estimer la récupération.";
   return "Ressenti cohérent avec l'effort mesuré.";
+}
+
+/* ================= Coach nutrition ================= */
+function buildCoachContext(){
+  const today = todayStr();
+  const goals = computeGoals();
+  const tot = totalsOf(today, {horsIntra:true});
+  const intra = intraEffortOf(today);
+  const now = new Date();
+  const hour = now.getHours();
+
+  const restant = { kcal: Math.max(0, goals.kcal - tot.kcal), prot: Math.max(0, goals.prot - tot.prot),
+    gluc: Math.max(0, goals.gluc - tot.gluc), lip: Math.max(0, goals.lip - tot.lip) };
+
+  const mealsToday = mealsOf(today);
+  const repas_du_jour = mealsToday.filter(m=>!m.intraEffort).map(m=>({type:m.type, nom:m.name, heure:m.time||"—", kcal:m.kcal, P:m.prot, G:m.gluc, L:m.lip}));
+
+  const dayWorkouts = Object.values(db.workouts).filter(w=>w.date===today);
+  const sport_auj = dayWorkouts.map(w=>({type:w.type, duree_min:w.duree_min, kcal:w.kcal, denivele_m:w.denivele_m, relative_effort:w.relative_effort, rpe:w.rpe}));
+
+  const semaine7 = Array.from({length:7},(_,i)=>addDays(today, i-6));
+  const plats_semaine = semaine7.flatMap(d=>mealsOf(d).map(m=>m.name)).filter(Boolean).slice(0, 14);
+
+  const di = dayInfo(today);
+  const jour_semaine = ["dim","lun","mar","mer","jeu","ven","sam"][now.getDay()];
+
+  return {
+    moment: { date:today, heure:hour, jour_semaine },
+    objectifs_jour: { kcal:goals.kcal, prot:goals.prot, gluc:goals.gluc, lip:goals.lip },
+    consomme_jour: { kcal:r0(tot.kcal), prot:r0(tot.prot), gluc:r0(tot.gluc), lip:r0(tot.lip) },
+    intra_effort_jour: { kcal:r0(intra.gluc*4), gluc:r0(intra.gluc) },
+    restant: { kcal:r0(restant.kcal), prot:r0(restant.prot), gluc:r0(restant.gluc), lip:r0(restant.lip) },
+    repas_du_jour,
+    semaine: { plats: plats_semaine, jours_renseignes: mealsToday.length > 0 ? 1 : 0 },
+    sport: { aujourd_hui: sport_auj, charge_jour: sport_auj.reduce((s,w)=>s+(w.relative_effort||0),0),
+      phase: db.settings.sport?.phase || "—", objectifs: db.settings.sport?.objectifs || [] },
+    sante: { forme_jour: di.forme || "—", sommeil_h: di.sommeil_h || "—", douleurs_actives: (di.douleurs||[]).length },
+    regime: db.settings.diet, allergies: db.settings.dietNotes, complements: db.settings.complements.map(c=>typeof c==='string'?c:`${c.nom} ${c.dose||''}`).join(", "),
+    ton: db.settings.coachTon
+  };
+}
+async function askCoach(){
+  const ctx = buildCoachContext();
+  const cacheKey = `${todayStr()}_quoi`;
+  if (db.coachCache[cacheKey]){ return db.coachCache[cacheKey]; }
+
+  const prompt = `Contexte: ${JSON.stringify(ctx)}`;
+  const messages = [{role:"user", content:prompt}];
+
+  try {
+    const resp = await callClaude(messages, SYS_PROMPT_COACH_QUOI);
+    const result = parseAI(resp);
+    db.coachCache[cacheKey] = result;
+    save();
+    return result;
+  } catch(err){ throw err; }
 }
 
 /* ================= Analyse croisée (§6) ================= */
@@ -1652,6 +1769,23 @@ function deleteMeal(){
 function refresh(){ if (state.page==="day") renderDay(); else if (state.page==="trends") renderTrends(); else renderHome(); }
 
 /* ================= Claude API ================= */
+const SYS_PROMPT_COACH_QUOI = `Tu es un coach nutrition. Ben te demande « Que manger maintenant ? ».
+
+RÈGLES NON NÉGOCIABLES :
+1. **Régime** : respect ABSOLU de son choix. Zéro exception, zéro « tu pourrais faire une entorse ».
+2. **Allergies/aversions** : respect absolu, jamais de substitution non demandée.
+3. **Raisonner sur le restant** : il te reste X kcal, Y g de prot, etc. Proposer pour combler ce restant, pas pour un idéal théorique.
+4. **Sport du jour** : après sortie longue → protéines + glucides récupération. Jour repos → on peut serrer glucides.
+5. **Heure** : pas de plat complet à 15h, pas de dîner à 22h30.
+6. **Varier** par rapport aux plats de la semaine (ils sont dans le contexte).
+7. **2-3 suggestions**, dont une « rapide » (< 10 min).
+8. **Portions chiffrées et réalistes** : « 150g cabillaud + 200g riz ».
+9. Si objectifs déjà atteints : le dire simplement, suggérer léger ou rien. Ne JAMAIS pousser à manger plus.
+10. **Ton** : ${db.settings.coachTon || "factuel"}. Pas de jugement moral, pas de « tu as craqué ».
+
+Réponds UNIQUEMENT en JSON strict au format exact:
+{"lecture":"1-2 phrases: où j'en suis aujourd'hui","suggestions":[{"plat":"...","kcal":0,"prot_g":0,"gluc_g":0,"lip_g":0,"pourquoi":"lien explicite avec restant/séance","effort":"rapide|moyen|cuisine"}],"a_eviter":"optionnel"}`;
+
 const SYS_PROMPT_COACH = `Tu es un coach sportif rigoureux qui accompagne Ben dans sa progression. Voici les règles NON NÉGOCIABLES :
 
 1. **Jamais de causalité** : écris « on observe que… », « une piste possible… ». Une corrélation sur quelques semaines ne démontre rien. Jamais « X a causé Y ».
@@ -2300,6 +2434,72 @@ function saveSportSettings(){
   toast("Paramètres sport enregistrés ✓");
   renderSettings();
 }
+function openCoachSheet(){
+  const ctx = buildCoachContext();
+  $("coach-loading").style.display = "block";
+  $("coach-error").style.display = "none";
+  $("coach-result").innerHTML = "";
+  openSheet("sheet-coach");
+  askCoach().then(result=>{
+    $("coach-loading").style.display = "none";
+    let html = `<div style="margin-bottom:12px">${result.lecture || "—"}</div>`;
+    if (result.suggestions && result.suggestions.length > 0){
+      html += `<div>${result.suggestions.map((s,i)=>`
+        <div class="card" style="margin-bottom:8px">
+          <div style="font-weight:600;font-size:13px;margin-bottom:4px">${s.plat}</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${r0(s.kcal)} kcal · P ${r0(s.prot_g)}g · G ${r0(s.gluc_g)}g · L ${r0(s.lip_g)}g</div>
+          <div style="font-size:12px;margin-bottom:8px">${s.pourquoi}</div>
+          <div style="font-size:10px;color:var(--accent);margin-bottom:10px">Effort: ${s.effort}</div>
+          <button class="btn sec" style="width:100%" onclick="addSuggestionAsMeal(${i}, '${s.plat}', ${r0(s.kcal)}, ${r0(s.prot_g)}, ${r0(s.gluc_g)}, ${r0(s.lip_g)})">+ Ajouter comme repas</button>
+        </div>
+      `).join("")}</div>`;
+    }
+    if (result.a_eviter){ html += `<div style="font-size:11px;color:var(--muted);padding:10px;background:var(--page);border-radius:8px">${result.a_eviter}</div>`; }
+    $("coach-result").innerHTML = html;
+    $("coach-result").style.display = "block";
+  }).catch(err=>{
+    $("coach-loading").style.display = "none";
+    $("coach-error").textContent = err.message;
+    $("coach-error").style.display = "block";
+  });
+}
+function addSuggestionAsMeal(idx, nom, kcal, prot, gluc, lip){
+  state.add = { type: "collation", date: todayStr(), source:"coach", photo:null, convo:[], result:null, editId:null };
+  state.add.result = { plat:nom, ingredients:[], total:{kcal,prot_g:prot,gluc_g:gluc,lip_g:lip}, confiance:0.7, questions:[] };
+  state.add.editId = null;
+  closeSheets();
+  document.querySelectorAll("#add-type-chips .chip").forEach(c=>c.classList.toggle("on", c.dataset.t===state.add.type));
+  renderAddFavorites();
+  openSheet("sheet-ai");
+  $("ai-title").textContent = nom;
+  $("ai-photo-preview").style.display = "none";
+  $("ai-describe").style.display = "none";
+  $("ai-photo-context").style.display = "none";
+  $("ai-result").style.display = "block";
+  $("ai-result").innerHTML = `<div class="spread" style="margin-bottom:12px"><h2 style="margin:0">Résumé</h2><button class="btn ghost" style="width:auto;font-size:12px" onclick="editMealManually()">Modifier</button></div><div style="font-size:12px;margin-bottom:12px"><div>${nom}</div><div class="tiny">${kcal} kcal · P ${prot}g · G ${gluc}g · L ${lip}g</div></div><button class="btn" onclick="saveMeal()" style="width:100%">Ajouter ce repas</button>`;
+}
+function renderCoachWidget(){
+  const ctx = buildCoachContext();
+  const restText = ctx.restant.kcal > 0 ? `il te reste ${ctx.restant.kcal} kcal et ${ctx.restant.prot}g de prot.` : "objectifs atteints pour aujourd'hui.";
+  $("coach-context").textContent = `Actuellement : ${r0(ctx.consomme_jour.kcal)} / ${r0(ctx.objectifs_jour.kcal)} kcal · ${restText}`;
+}
+function setDiet(d){
+  db.settings.diet = d;
+  document.querySelectorAll("#diet-chips .chip").forEach(c=>c.classList.toggle("on", c.dataset.diet===d));
+}
+function setTon(t){
+  db.settings.coachTon = t;
+  document.querySelectorAll("#ton-chips .chip").forEach(c=>c.classList.toggle("on", c.dataset.ton===t));
+}
+function saveCoachSettings(){
+  db.settings.diet = $('input[name="diet"]:checked')?.value || db.settings.diet;
+  db.settings.dietNotes = $("s-dietnotes").value;
+  db.settings.coachTon = $('input[name="ton"]:checked')?.value || db.settings.coachTon;
+  db.settings.complements = $("s-complements").value.split('\n').map(l=>l.trim()).filter(Boolean);
+  save();
+  toast("Paramètres coach enregistrés ✓");
+  renderSettings();
+}
 
 function renderSettings(){
   const g = db.settings.goals;
@@ -2322,6 +2522,11 @@ function renderSettings(){
   $("s-phase").value = s.phase || "reprise";
   $("s-contraintes").value = s.contraintes || "";
   renderSportObjectives();
+  const c = db.settings;
+  document.querySelectorAll("#diet-chips .chip").forEach(chip=>chip.classList.toggle("on", chip.dataset.diet === c.diet));
+  document.querySelectorAll("#ton-chips .chip").forEach(chip=>chip.classList.toggle("on", chip.dataset.ton === c.coachTon));
+  $("s-dietnotes").value = c.dietNotes || "";
+  $("s-complements").value = (c.complements || []).join('\n');
 }
 document.querySelectorAll("#goal-mode-chips .chip").forEach(c=>{
   c.addEventListener("click", ()=>{ db.settings.goals.mode = c.dataset.mode; renderSettings(); });
