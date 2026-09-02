@@ -293,6 +293,11 @@ nav.tabs svg { width:22px; height:22px; }
     <div class="tiles" id="training-week-tiles"></div>
   </div>
   <div class="card">
+    <h2>Plan de la semaine</h2>
+    <div id="training-plan" style="margin-bottom:10px"></div>
+    <button class="btn sec" style="width:100%" onclick="openPlanSheet()">📷 Gérer le plan</button>
+  </div>
+  <div class="card">
     <h2>Séances récentes</h2>
     <div id="training-workouts"></div>
   </div>
@@ -573,6 +578,28 @@ nav.tabs svg { width:22px; height:22px; }
   <input type="hidden" id="rpe-selector-id">
 </div>
 
+<!-- ============ SHEET : PLAN ============ -->
+<div class="sheet" id="sheet-plan" role="dialog" aria-label="Plan de la semaine">
+  <div class="grab"></div>
+  <h2>Plan de la semaine</h2>
+  <div id="plan-view" style="display:none">
+    <div class="tiny" style="color:var(--ink2);margin-bottom:12px">Semaine <span id="plan-week"></span></div>
+    <div id="plan-seances-list" style="margin-bottom:16px"></div>
+    <div class="row" style="gap:8px">
+      <button class="btn" onclick="savePlan()">Enregistrer</button>
+      <button class="btn sec" onclick="closeSheets()">Annuler</button>
+    </div>
+  </div>
+  <div id="plan-edit" style="display:none">
+    <div class="tiny" style="color:var(--ink2);margin-bottom:12px">Importer le plan de cette semaine</div>
+    <input type="file" id="plan-photo-input" accept="image/*" style="margin-bottom:12px">
+    <button class="btn" onclick="analyzePlanPhoto()" id="plan-analyze-btn">Analyser la capture</button>
+    <button class="btn sec" onclick="setPlanEmpty()">Pas de plan cette semaine</button>
+    <div id="plan-loading" class="thinking" style="display:none;margin-top:12px"><div class="spin"></div><div class="small">Analyse en cours…</div></div>
+    <div id="plan-error" style="display:none;margin-top:12px;padding:10px;background:var(--page);border-left:3px solid var(--critical);color:var(--critical);font-size:12px"></div>
+  </div>
+</div>
+
 <div class="toast" id="toast"><span class="txt" id="toast-txt"></span><button class="x" onclick="closeToast()" aria-label="Fermer">✕</button></div>
 <div class="tooltip" id="tooltip"></div>
 <div class="update-banner" id="update-banner">
@@ -584,7 +611,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.6.3";
+const APP_VERSION = "1.6.4";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -593,6 +620,7 @@ db.favorites = db.favorites || [];
 db.settings.withings = db.settings.withings || null;
 db.settings.strava = db.settings.strava || null;
 db.workouts = db.workouts || {};
+db.plan = db.plan || {};
 
 const WITHINGS = {
   clientId: "72446188fa3e2c381f62f6c2e617b09e71cbee19dc2fd0722e39d6e4810a8587",
@@ -614,7 +642,7 @@ function loadDB(){
   return { settings:{ apiKey:"", model:"claude-sonnet-4-5", withings:null, strava:null,
       goals:{ mode:"default", manual:{...DEFAULTS},
         profile:{ sexe:"H", age:35, taille:178, poids:78, act:1.375, obj:0 } } },
-    meals:[], days:{}, favorites:[], workouts:{} };
+    meals:[], days:{}, favorites:[], workouts:{}, plan:{} };
 }
 function save(){ try { localStorage.setItem(LS_KEY, JSON.stringify(db)); } catch(e){ toast("⚠️ Stockage plein — pense à exporter puis purger.", true); } }
 
@@ -846,6 +874,103 @@ function getRPEMessage(w){
   if (ecart < -25) return "Séance plus exigeante physiologiquement que ressentie — attention à ne pas sous-estimer la récupération.";
   return "Ressenti cohérent avec l'effort mesuré.";
 }
+
+/* ================= Plan de la semaine ================= */
+function getCurrentWeekISO(){
+  const d = new Date(todayStr()+"T12:00:00");
+  const jan = new Date(d.getFullYear(), 0, 1);
+  const diff = d - jan;
+  const dayOfYear = Math.floor(diff / 86400000) + 1;
+  const weekNum = Math.ceil((dayOfYear + new Date(d.getFullYear(), 0, 1).getDay()) / 7);
+  return `${d.getFullYear()}-W${String(weekNum).padStart(2,"0")}`;
+}
+let state_plan = { week:null, seances:[], mode:"edit" };
+function openPlanSheet(){
+  state_plan.week = getCurrentWeekISO();
+  const existing = db.plan[state_plan.week];
+  if (existing && existing.aucunPlan){ state_plan.mode = "edit"; $("plan-edit").style.display = "block"; $("plan-view").style.display = "none"; }
+  else if (existing && existing.seances){ state_plan.seances = existing.seances.slice(); state_plan.mode = "view"; renderPlanSeances(); $("plan-view").style.display = "block"; $("plan-edit").style.display = "none"; }
+  else { state_plan.seances = []; state_plan.mode = "edit"; $("plan-edit").style.display = "block"; $("plan-view").style.display = "none"; }
+  $("plan-error").style.display = "none"; $("plan-loading").style.display = "none";
+  openSheet("sheet-plan");
+}
+function renderPlanSeances(){
+  $("plan-week").textContent = state_plan.week;
+  $("plan-seances-list").innerHTML = state_plan.seances.map((s, idx)=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--page);border-radius:8px;margin-bottom:6px">
+      <div style="flex:1;font-size:12px">
+        <div style="font-weight:600">${DOULEUR_LABELS[s.type]||s.type}</div>
+        <div style="color:var(--muted);font-size:11px">${s.jour} · ${s.duree_min} min · ${s.intensite}</div>
+        ${s.description?`<div style="color:var(--ink2);font-size:11px">${s.description}</div>`:""}
+      </div>
+      <button class="btn ghost" onclick="removePlanSeance(${idx})" style="color:var(--critical);width:auto;padding:4px 6px;font-size:12px">✕</button>
+    </div>
+  `).join("");
+}
+function removePlanSeance(idx){ state_plan.seances.splice(idx, 1); renderPlanSeances(); }
+function analyzePlanPhoto(){
+  const file = $("plan-photo-input").files[0];
+  if (!file){ toast("Choisis une image d'abord", true); return; }
+  const reader = new FileReader();
+  reader.onload = async (e)=>{
+    $("plan-loading").style.display = "block"; $("plan-error").style.display = "none";
+    try {
+      const base64 = e.target.result.split(",")[1];
+      const resp = await callClaudeWithImage([{ role:"user", content:[{type:"image",media_type:"image/jpeg",data:base64}, {type:"text",text:"Analyse ce plan d'entraînement et extrais les séances."}] }], SYS_PROMPT_PLAN);
+      const plan = parseAI(resp);
+      state_plan.week = plan.semaine || getCurrentWeekISO();
+      state_plan.seances = plan.seances || [];
+      state_plan.mode = "view";
+      renderPlanSeances();
+      $("plan-view").style.display = "block"; $("plan-edit").style.display = "none";
+      $("plan-loading").style.display = "none";
+    } catch(err){ $("plan-error").textContent = err.message; $("plan-error").style.display = "block"; $("plan-loading").style.display = "none"; }
+  };
+  reader.readAsDataURL(file);
+}
+async function callClaudeWithImage(messages, sys_prompt){
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST",
+    headers:{ "content-type":"application/json", "x-api-key": db.settings.apiKey,
+      "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
+    body: JSON.stringify({ model: db.settings.model||"claude-sonnet-4-5", max_tokens: 1500,
+      system: sys_prompt, messages })
+  });
+  if (!r.ok){
+    const err = await r.json().catch(()=>({}));
+    throw new Error(err?.error?.message || ("Erreur API ("+r.status+")"));
+  }
+  const data = await r.json();
+  return (data.content||[]).filter(c=>c.type==="text").map(c=>c.text).join("");
+}
+function setPlanEmpty(){ db.plan[state_plan.week] = {aucunPlan:true, source:"app"}; save(); closeSheets(); toast("Pas de plan cette semaine ✓"); if (state.page==="training") renderTraining(); }
+function savePlan(){ db.plan[state_plan.week] = {aucunPlan:false, source:"app", seances:state_plan.seances}; save(); closeSheets(); toast("Plan enregistré ✓"); if (state.page==="training") renderTraining(); }
+function matchPlanToWorkouts(week){
+  const plan = db.plan[week];
+  if (!plan || plan.aucunPlan) return [];
+  const workoutsByDate = {};
+  Object.values(db.workouts).forEach(w=>{ if (!workoutsByDate[w.date]) workoutsByDate[w.date] = []; workoutsByDate[w.date].push(w); });
+  return (plan.seances||[]).map(s=>{
+    let match = null, status = "➖";
+    for (let d = -1; d <= 1; d++){ const date = addDays(s.jour, d); const candidates = (workoutsByDate[date]||[]).filter(w=>w.type === s.type || w.nom.toLowerCase().includes(s.description?.toLowerCase()||"")); if (candidates.length > 0){ match = candidates[0]; break; } }
+    if (match){ status = (match.duree_min <= s.duree_min*1.2 && match.duree_min >= s.duree_min*0.8) ? "✅" : "⚠️"; }
+    return {...s, match, status};
+  });
+}
+function renderPlanFrise(days){
+  const dates = Array.from({length:days},(_,i)=>addDays(todayStr(), i-days+1));
+  const matched = matchPlanToWorkouts(getCurrentWeekISO());
+  if (matched.length === 0) return `<div class="tiny" style="color:var(--muted);text-align:center;padding:20px">Aucun plan pour cette semaine.</div>`;
+  return matched.map(m=>`<div style="display:flex;align-items:center;gap:8px;padding:12px;background:var(--page);border-radius:8px;margin-bottom:8px">
+    <span style="font-size:20px">${m.status}</span>
+    <div style="flex:1">
+      <div style="font-weight:600;font-size:13px">${m.jour} — ${m.type}</div>
+      <div style="font-size:12px;color:var(--muted)">${m.duree_min} min · ${m.intensite}</div>
+      ${m.description?`<div style="font-size:11px;color:var(--ink2);margin-top:4px">${m.description}</div>`:""}
+    </div>
+  </div>`).join("");
+}
+
 function renderPainFrise(days){
   const dates = Array.from({length:days},(_,i)=>addDays(todayStr(), i-days+1));
   const allZones = new Set();
@@ -959,6 +1084,7 @@ function renderTraining(){
       </div>
     </div>`;
   }).join("");
+  if ($("training-plan")){ $("training-plan").innerHTML = renderPlanFrise(30); }
   if ($("training-pain")){ $("training-pain").innerHTML = renderPainFrise(30); }
 }
 function openRPESelector(date, id){
@@ -1254,6 +1380,16 @@ function deleteMeal(){
 function refresh(){ if (state.page==="day") renderDay(); else if (state.page==="trends") renderTrends(); else renderHome(); }
 
 /* ================= Claude API ================= */
+const SYS_PROMPT_PLAN = `Tu es un coach en entraînement sportif. On te donne une capture d'écran d'un plan d'entraînement (par ex. Campus Coach).
+Extrais les séances de la semaine en cours. Pour chaque séance, identifie : date (YYYY-MM-DD), type d'entraînement, description courte, durée en minutes, intensité.
+Réponds UNIQUEMENT avec un objet JSON valide, sans texte autour, au format exact :
+{"semaine":"YYYY-Www","seances":[{"jour":"YYYY-MM-DD","type":"...","description":"...","duree_min":0,"intensite":"facile|modere|dur|tres_dur"}]}
+Règles :
+- "semaine" : format ISO W (ex "2026-W36").
+- "intensite" : une des quatre valeurs exactes (facile, modere, dur, tres_dur).
+- Si une séance a une durée estimée, sois réaliste. Sinon, mets 0.
+- Si tu ne peux pas lire une info, laisse-la vide ou à 0.`;
+
 const SYS_PROMPT = `Tu es un nutritionniste expert. On te donne la description ou la photo d'un repas.
 Estime les ingrédients visibles, leur quantité en grammes, puis les macronutriments.
 Réponds UNIQUEMENT avec un objet JSON valide, sans texte autour, au format exact :
