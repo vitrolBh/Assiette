@@ -320,6 +320,12 @@ nav.tabs svg { width:22px; height:22px; }
     <div style="margin-top:10px"><button class="btn sec" onclick="openSheet('sheet-checkin')">Saisir le check-in</button></div>
   </div>
   <div class="card">
+    <h2>Couverture micronutriments (7 j)</h2>
+    <div class="tiny" style="color:var(--muted);margin-bottom:10px">Estimation qualitative (bien couvert, moyen, faible) — pas une analyse nutritionnelle</div>
+    <div id="training-micronutrients" style="margin-bottom:10px"></div>
+    <button class="btn sec" style="width:100%" onclick="openMicronutrientAnalysis()">Analyser</button>
+  </div>
+  <div class="card">
     <h2>Objectifs et phase</h2>
     <div id="training-objectives"></div>
     <div style="margin-top:10px"><button class="btn sec" onclick="showPage('settings')">Gérer les objectifs</button></div>
@@ -724,7 +730,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.7.0";
+const APP_VERSION = "1.7.1";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -1086,6 +1092,56 @@ async function askCoachSoir(){
     const resp = (await r.json()).content[0].text;
     const result = parseAI(resp);
     db.coachCache[cacheKey] = {ctxHash, result, timestamp:Date.now()};
+    save();
+    return result;
+  } catch(err){ throw err; }
+}
+function buildMicronutrientContext(){
+  const days = [];
+  let d = new Date();
+  for (let i = 0; i < 7; i++){
+    days.unshift(todayStr(d));
+    d.setDate(d.getDate() - 1);
+  }
+
+  const mealsDesc = [];
+  days.forEach(dateStr=>{
+    const dayMeals = mealsOf(dateStr);
+    dayMeals.forEach(m=>{
+      const ingr = (m.ingredients||[]).map(i=>i.name).join(", ");
+      mealsDesc.push(`${dateStr} ${m.name}${ingr?` (${ingr})`:''}`);
+    });
+  });
+
+  return {
+    moment: { date: todayStr(), jour_semaine: ["dimanche","lundi","mardi","mercredi","jeudi","vendredi","samedi"][new Date(todayStr()+"T12:00:00").getDay()] },
+    meals_7j: mealsDesc,
+    complements: db.settings.complements || []
+  };
+}
+async function askCoachMicronutrients(){
+  const ctx = buildMicronutrientContext();
+  const weekStart = (() => {
+    const d = new Date();
+    const diff = d.getDate() - d.getDay() + (d.getDay() === 0 ? -6 : 1);
+    return todayStr(new Date(d.setDate(diff)));
+  })();
+  const cacheKey = `${weekStart}_micronutrients`;
+  const ctxHash = hashContext(ctx);
+  if (db.coachCache[cacheKey] && db.coachCache[cacheKey].ctxHash === ctxHash){ return db.coachCache[cacheKey].result; }
+
+  const prompt = `Contexte: ${JSON.stringify(ctx)}`;
+  const messages = [{role:"user", content:prompt}];
+  const model = "claude-haiku-4-5-20251001";
+
+  try {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST", headers:{"content-type":"application/json", "x-api-key":db.settings.apiKey, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true"},
+      body:JSON.stringify({model, max_tokens:1000, system:SYS_PROMPT_COACH_MICRONUTRIMENTS, messages})});
+    if (!r.ok) throw new Error((await r.json()).error?.message || `Erreur ${r.status}`);
+    const resp = (await r.json()).content[0].text;
+    const result = parseAI(resp);
+    db.coachCache[cacheKey] = {ctxHash, result};
     save();
     return result;
   } catch(err){ throw err; }
@@ -1564,6 +1620,33 @@ function selectRPE(val){
   toast("RPE "+val+" enregistré ✓");
   if (state.page==="training") renderTraining();
 }
+function openMicronutrientAnalysis(){
+  $("training-micronutrients").innerHTML = '<div style="text-align:center;padding:20px"><div style="font-size:12px;color:var(--muted)">Analyse en cours…</div></div>';
+  askCoachMicronutrients().then(result=>{
+    let html = '';
+    if (result.couverture && result.couverture.length > 0){
+      html += '<div style="margin-bottom:12px">';
+      result.couverture.forEach(c=>{
+        const levelEmoji = c.niveau === 'bien' ? '✓' : c.niveau === 'moyen' ? '–' : '✗';
+        html += `<div style="margin-bottom:8px;padding:8px;background:var(--page);border-radius:6px"><div style="font-weight:600;font-size:13px;margin-bottom:2px">${levelEmoji} ${c.famille}</div><div style="font-size:11px;color:var(--ink2)">${c.vu}</div></div>`;
+      });
+      html += '</div>';
+    }
+    if (result.suggestions_ciblees && result.suggestions_ciblees.length > 0){
+      html += '<div style="margin-bottom:10px"><div style="font-weight:600;font-size:12px;margin-bottom:6px">À explorer:</div><ul style="margin:0;padding-left:16px;font-size:12px">';
+      result.suggestions_ciblees.forEach(s=>{
+        html += `<li>${s}</li>`;
+      });
+      html += '</ul></div>';
+    }
+    if (result.note){
+      html += `<div style="font-size:10px;color:var(--muted);padding:8px;background:var(--page);border-radius:6px;font-style:italic">${result.note}</div>`;
+    }
+    $("training-micronutrients").innerHTML = html || '<div style="font-size:12px;color:var(--muted)">Pas de données suffisantes.</div>';
+  }).catch(err=>{
+    $("training-micronutrients").innerHTML = `<div style="font-size:12px;color:var(--critical)">${err.message}</div>`;
+  });
+}
 
 /* ================= Sheets ================= */
 function openSheet(id){
@@ -1840,6 +1923,21 @@ RÈGLES NON NÉGOCIABLES :
 
 Réponds UNIQUEMENT en JSON strict au format exact:
 {"lecture":"1-2 phrases: où j'en suis aujourd'hui","suggestions":[{"plat":"...","kcal":0,"prot_g":0,"gluc_g":0,"lip_g":0,"pourquoi":"lien explicite avec restant/séance","effort":"rapide|moyen|cuisine"}],"a_eviter":"optionnel"}`;
+
+const SYS_PROMPT_COACH_MICRONUTRIMENTS = `Tu évalues la couverture qualitative des micronutriments sur 7 jours à partir des descriptions des plats et ingrédients.
+
+FAMILLES À ÉVALUER (8 au total) : fibres, légumes verts, fruits, oméga-3, fer, calcium, légumineuses, produits fermentés.
+
+RÈGLES NON NÉGOCIABLES :
+1. **Jamais de chiffre** : pas de "12 mg", "65%", "quantité". Uniquement qualitatif.
+2. **Tenir compte des compléments** : une famille déjà complémentée n'est PAS signalée comme manquante. Au mieux : "ton fer passe surtout par la complémentation, l'alimentaire reste léger".
+3. **Ne JAMAIS recommander de complément** : ni en ajouter, ni en modifier la dose. Les suggestions restent alimentaires. Si carence suspecte → orienter vers professionnel.
+4. **3 niveaux uniquement** : "bien couvert" / "moyen" / "faible".
+5. **Mention obligatoire** : "Estimation à partir de tes descriptions, pas une analyse nutritionnelle."
+6. **Exemples concrets** : dans "vu", cite ce qu'on a vu cette semaine (ex: "épinards, brocoli, kale" pour légumes verts).
+
+Réponds UNIQUEMENT en JSON strict au format exact :
+{"couverture":[{"famille":"...","niveau":"bien|moyen|faible","vu":"exemples cette semaine"}],"suggestions_ciblees":["aliment1","aliment2"],"note":"Estimation à partir de tes descriptions, pas une analyse nutritionnelle."}`;
 
 const SYS_PROMPT_COACH = `Tu es un coach sportif rigoureux qui accompagne Ben dans sa progression. Voici les règles NON NÉGOCIABLES :
 
