@@ -730,7 +730,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.7.1";
+const APP_VERSION = "1.7.2";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -1065,7 +1065,7 @@ async function askCoach(){
       body:JSON.stringify({model, max_tokens:1000, system:SYS_PROMPT_COACH_QUOI, messages})});
     if (!r.ok) throw new Error((await r.json()).error?.message || `Erreur ${r.status}`);
     const resp = (await r.json()).content[0].text;
-    const result = parseAI(resp);
+    const result = parseJSON(resp);
     db.coachCache[cacheKey] = {ctxHash, result};
     save();
     return result;
@@ -1090,7 +1090,7 @@ async function askCoachSoir(){
       body:JSON.stringify({model, max_tokens:1500, system:SYS_PROMPT_COACH_SOIR, messages})});
     if (!r.ok) throw new Error((await r.json()).error?.message || `Erreur ${r.status}`);
     const resp = (await r.json()).content[0].text;
-    const result = parseAI(resp);
+    const result = parseJSON(resp);
     db.coachCache[cacheKey] = {ctxHash, result, timestamp:Date.now()};
     save();
     return result;
@@ -1140,7 +1140,7 @@ async function askCoachMicronutrients(){
       body:JSON.stringify({model, max_tokens:1000, system:SYS_PROMPT_COACH_MICRONUTRIMENTS, messages})});
     if (!r.ok) throw new Error((await r.json()).error?.message || `Erreur ${r.status}`);
     const resp = (await r.json()).content[0].text;
-    const result = parseAI(resp);
+    const result = parseJSON(resp);
     db.coachCache[cacheKey] = {ctxHash, result};
     save();
     return result;
@@ -1293,8 +1293,8 @@ Données:
 - Qualité: ${ctx.qualite.joursAvecRepas}/${ctx.qualite.joursRenseignes} j avec repas, ${ctx.qualite.seancesAvecRPE}/${ctx.qualite.seancesAvecFC} séances avec RPE/FC`}];
 
   try {
-    const resp = await callClaude(messages, SYS_PROMPT_COACH);
-    const analysis = parseAI(resp);
+    const resp = await callClaude(messages, SYS_PROMPT_COACH, 2000);
+    const analysis = parseJSON(resp);
     analysisCache[cacheKey] = analysis;
     return analysis;
   } catch(err){
@@ -1344,7 +1344,7 @@ function analyzePlanPhoto(){
     try {
       const base64 = e.target.result.split(",")[1];
       const resp = await callClaudeWithImage([{ role:"user", content:[{type:"image",media_type:"image/jpeg",data:base64}, {type:"text",text:"Analyse ce plan d'entraînement et extrais les séances."}] }], SYS_PROMPT_PLAN);
-      const plan = parseAI(resp);
+      const plan = parseJSON(resp);
       state_plan.week = plan.semaine || getCurrentWeekISO();
       state_plan.seances = plan.seances || [];
       state_plan.mode = "view";
@@ -1976,13 +1976,13 @@ Règles :
 - Sois réaliste sur les portions (assiette standard française).
 - Les totaux doivent être cohérents avec la somme des ingrédients.`;
 
-async function callClaude(messages){
+async function callClaude(messages, sysPrompt = SYS_PROMPT, maxTokens = 1500){
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST",
     headers:{ "content-type":"application/json", "x-api-key": db.settings.apiKey,
       "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
-    body: JSON.stringify({ model: db.settings.model||"claude-sonnet-4-5", max_tokens: 1500,
-      system: SYS_PROMPT, messages })
+    body: JSON.stringify({ model: db.settings.model||"claude-sonnet-4-5", max_tokens: maxTokens,
+      system: sysPrompt, messages })
   });
   if (!r.ok){
     const err = await r.json().catch(()=>({}));
@@ -1991,10 +1991,21 @@ async function callClaude(messages){
   const data = await r.json();
   return (data.content||[]).filter(c=>c.type==="text").map(c=>c.text).join("");
 }
-function parseAI(text){
+function parseJSON(text){
   const m = text.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error("Réponse illisible");
-  const j = JSON.parse(m[0]);
+  if (!m){
+    console.error("Parsing failed. Raw response:", text);
+    throw new Error(`Réponse invalide: ${text.substring(0, 120)}`);
+  }
+  try {
+    return JSON.parse(m[0]);
+  } catch(e){
+    console.error("JSON parse error. Raw response:", text);
+    throw new Error(`JSON invalide: ${text.substring(0, 120)}`);
+  }
+}
+function parseAI(text){
+  const j = parseJSON(text);
   j.ingredients = j.ingredients||[]; j.questions = j.questions||[];
   j.total = j.total || j.ingredients.reduce((t,i)=>({kcal:t.kcal+(+i.kcal||0),prot_g:t.prot_g+(+i.prot_g||0),gluc_g:t.gluc_g+(+i.gluc_g||0),lip_g:t.lip_g+(+i.lip_g||0)}),{kcal:0,prot_g:0,gluc_g:0,lip_g:0});
   return j;
