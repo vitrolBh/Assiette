@@ -730,7 +730,7 @@ nav.tabs svg { width:22px; height:22px; }
 <script>
 "use strict";
 /* ================= Application ================= */
-const APP_VERSION = "1.7.2";
+const APP_VERSION = "1.7.3";
 /* ================= État & stockage ================= */
 const LS_KEY = "assiette_v1";
 const DEFAULTS = { kcal:2200, prot:140, gluc:230, lip:73 };
@@ -1409,6 +1409,7 @@ async function doAnalyze(){
 
   $("analyze-loading").style.display = "block";
   $("analyze-error").style.display = "none";
+  $("analyze-result").style.display = "none";
   $("analyze-result").innerHTML = "";
   $("analyze-btn").disabled = true;
 
@@ -1418,6 +1419,7 @@ async function doAnalyze(){
 
     if (analysis.redFlags){
       $("analyze-result").innerHTML = `<div style="padding:12px;background:var(--page);border-left:3px solid var(--critical);color:var(--ink)"><div style="font-weight:600;color:var(--critical);margin-bottom:6px">⚠️ Garde-fou activé</div><div style="font-size:12px">${analysis.message}</div></div>`;
+      $("analyze-result").style.display = "block";
       return;
     }
 
@@ -1456,6 +1458,7 @@ async function doAnalyze(){
     }
 
     $("analyze-result").innerHTML = html;
+    $("analyze-result").style.display = "block";
   } catch(err){
     $("analyze-error").textContent = err.message;
     $("analyze-error").style.display = "block";
